@@ -1,0 +1,20 @@
+{
+  "name": "review-writer-skill",
+  "interface": {
+    "displayName": "Review Writer"
+  },
+  "plugins": [
+    {
+      "name": "chemical-review",
+      "source": {
+        "source": "local",
+        "path": "./plugins/chemical-review"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Research"
+    }
+  ]
+}
