@@ -1,0 +1,5 @@
+interface:
+  display_name: "Chemical Review"
+  short_description: "Iteratively produce a critical narrative chemical literature review"
+policy:
+  allow_implicit_invocation: false
