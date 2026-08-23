@@ -15,6 +15,7 @@ RUNTIME_SKILL_FILES = frozenset(
         "ASSET-TEMPLATES.md",
         "agents/openai.yaml",
         "feedback.py",
+        "delivery.py",
         "orchestrator.py",
         "prototype.py",
         "references/research-tools.md",

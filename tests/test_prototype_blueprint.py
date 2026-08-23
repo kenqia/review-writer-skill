@@ -9,7 +9,7 @@ SKILL_DIR = ROOT / ".agents" / "skills" / "chemical-review"
 sys.path.insert(0, str(SKILL_DIR))
 
 from orchestrator import ChemicalReviewOrchestrator  # noqa: E402
-from prototype import BlueprintProposal, PrototypeSignal, PrototypeSubmission  # noqa: E402
+from prototype import BlueprintProposal, PrototypeRunner, PrototypeSignal, PrototypeSubmission  # noqa: E402
 from research import PaperRecord, ResearchConfig  # noqa: E402
 
 
@@ -38,6 +38,32 @@ class DiscoveryFixture:
 
 
 class PrototypeBlueprintTests(unittest.TestCase):
+    def test_url_evidence_ids_preserve_colons_during_selection_validation(self):
+        with TemporaryDirectory() as project_dir:
+            doi_id = "https://doi.org/10.1000/example"
+            url_id = "https://example.org/paper:1"
+            Path(project_dir, "research-evidence.md").write_text(
+                "---\nkind: research-evidence\n---\n# Research Evidence Package\n",
+                encoding="utf-8",
+            )
+            Path(project_dir, "literature-set.md").write_text(
+                "---\nkind: layered-literature-set\n---\n"
+                "# Layered Literature Set\n\n"
+                "## Anchor/core\n"
+                f"- {doi_id}: DOI evidence\n"
+                f"- {url_id}: URL evidence\n",
+                encoding="utf-8",
+            )
+
+            selected = PrototypeRunner(project_dir)._validate_selection(
+                PrototypeSubmission(
+                    paper_ids=(doi_id, url_id),
+                    representative_reason="These URL identities must remain complete.",
+                )
+            )
+
+            self.assertEqual(selected, (doi_id, url_id))
+
     def test_fixtures_cover_summary_value_and_revision_paths(self):
         fixture_dir = ROOT / "tests" / "fixtures" / "chemical-review"
         required = {

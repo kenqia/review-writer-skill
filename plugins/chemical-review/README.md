@@ -17,6 +17,18 @@ The clean manuscript and the researcher-marked view are generated from one
 content source. Human feedback can route a later cycle back to the earliest
 affected phase.
 
+The workflow borrows and cross-applies frontier interviewing and source
+discipline from [Matt Pocock's `mattpocock/skills`](https://github.com/mattpocock/skills),
+but that project is not a chemistry or scientific authority. This plugin adds
+three readiness gates (`DISCOVERY_READY` → `EVIDENCE_READY` → `CLAIM_READY`),
+bounded Research budgets with a no-key fallback, source-bound
+Figure/Scheme/Table inventory, and continuous/acceptance execution modes.
+
+`ChemicalReviewOrchestrator.export_docx()` rebuilds a generic chemistry DOCX
+from the canonical `review-content.md` and writes an export manifest. A
+selected journal uses a versioned official-guide profile; without one the
+profile remains `NOT_SELECTED` rather than guessing formatting requirements.
+
 Invoke the installed skill explicitly as `$chemical-review`.
 
 For development, the canonical editable source remains

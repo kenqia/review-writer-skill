@@ -50,7 +50,7 @@ def validate(plugin: Path) -> list[str]:
             if not interface.get(field):
                 errors.append(f"manifest interface field {field} is required")
     skill = plugin / "skills" / "chemical-review"
-    required = ("SKILL.md", "WORKFLOW.md", "ASSET-TEMPLATES.md", "orchestrator.py", "research.py", "prototype.py", "units.py", "review.py", "feedback.py")
+    required = ("SKILL.md", "WORKFLOW.md", "ASSET-TEMPLATES.md", "orchestrator.py", "research.py", "prototype.py", "units.py", "review.py", "feedback.py", "delivery.py")
     for filename in required:
         if not (skill / filename).is_file():
             errors.append(f"missing bundled skill file: {filename}")

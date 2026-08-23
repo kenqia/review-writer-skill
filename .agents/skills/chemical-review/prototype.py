@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import date
 import hashlib
 from pathlib import Path
-import re
 from typing import Mapping
 
 from orchestrator import (
@@ -149,15 +148,7 @@ class PrototypeRunner:
         if not selected:
             raise ValueError("Prototype selection requires at least one non-empty Research evidence ID.")
         literature = literature_path.read_text(encoding="utf-8")
-        available: set[str] = set()
-        for heading in ("Anchor/core", "Extension", "Background/definition", "Controversy"):
-            available.update(
-                re.findall(
-                    r"^- ([^:\n]+):",
-                    _section_value(literature, heading),
-                    flags=re.MULTILINE,
-                )
-            )
+        available = _literature_evidence_ids(literature)
         missing = set(selected) - available
         if missing:
             raise ValueError(
@@ -428,6 +419,27 @@ def _items(values: tuple[str, ...]) -> str:
 
 def _nonblank(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(value.strip() for value in values if value.strip())
+
+
+def _literature_evidence_ids(literature: str) -> set[str]:
+    """Extract complete evidence IDs from generated literature bullets.
+
+    The delimiter is the first colon followed by a space, so URL schemes and
+    colons inside an identifier remain part of the ID.
+    """
+
+    available: set[str] = set()
+    for heading in ("Anchor/core", "Extension", "Background/definition", "Controversy"):
+        for line in _section_value(literature, heading).splitlines():
+            if not line.startswith("- "):
+                continue
+            entry = line[2:].strip()
+            identifier, separator, _ = entry.partition(": ")
+            if not separator:
+                identifier = entry.split(":", 1)[0]
+            if identifier.strip():
+                available.add(identifier.strip())
+    return available
 
 
 def _render_signals(signals: tuple[PrototypeSignal, ...], kind: str) -> str:

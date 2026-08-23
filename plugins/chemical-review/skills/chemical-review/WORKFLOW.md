@@ -7,6 +7,10 @@
 项目根目录由本次运行明确指定；三个资产直接保存在该目录。随 skill 提供的
 `orchestrator.py` 是一个无数据库的最小文件编排器，用于验证启动、Grill 更新、冷启动恢复和确认边界；它不代替后续 Research 或写作能力。
 
+本流程在入口持久化 `execution_mode`：`continuous` 会批量推进所有 ready units，只在硬阻塞或
+`HUMAN_ACTION_REQUIRED` 停下；`acceptance` 在阶段/批次边界暂停，适合人工验收。两种模式共用同一
+证据门和单一 Markdown 状态，不把“少停顿”当成降低来源要求。
+
 ## Inputs
 
 最小输入是一个化学综述主题或研究想法。研究者可以随后补充目标读者/期刊、授权 PDF、已有文献、工具配置和自然语言反馈；缺少目标读者和期刊时，orchestrator 提议一到三个期刊候选，研究者确认后才读取其当前官方作者指南，不把空白静默当作确定答案。
@@ -56,6 +60,12 @@ Research 使用随入口提供的可替换 adapter seam。默认能力路线按�
 
 “默认路线”表示已配置 adapter 的首选次序，而不是内置凭据或假装外部服务已可用：发现依次优先 OpenAlex、Semantic Scholar、Crossref，术语优先 PubChem、ChEBI，全文优先 Unpaywall、Europe PMC、CORE，解析优先 MinerU、GROBID、Docling。某类能力没有可用 adapter 时必须记录降级，必要时请求用户完成最小配置。
 
+Research 的 readiness 分三层，不能跨层偷升：`DISCOVERY_READY` 只表示有稳定题录/身份或有限
+no-key 发现；`EVIDENCE_READY` 还要求合法全文、访问依据和页码/章节 locator-bearing 解析；
+`CLAIM_READY` 由下游 claim binding、比较矩阵和人工/审查输入共同形成。metadata、摘要或 parser
+输出本身都不能生成 `SOURCE_FACT`。新的 `literature-set.md` 逐条写显式 readiness；旧项目条目
+没有标记时保持兼容默认，直到人类或 Research 明确降级。
+
 一次 Research 运行必须完成以下可检查结果：
 
 1. 生成七条可调整的检索路径（同义词、定义、方法/材料、关键事件、引用关系、作者/群体、最新进展），并保存查询语境。完成标准：`research-evidence.md` 的 `Search paths` 覆盖七条路径。
@@ -64,6 +74,11 @@ Research 使用随入口提供的可替换 adapter seam。默认能力路线按�
 4. 给出 Research 交接判断，列出已覆盖方向、高影响未覆盖区域和主要不确定性；不以固定论文数量作为停止条件。完成标准：`Research handoff` 明确提议 `PROTOTYPE`/`PRD`，或说明为何仍 `WAITING_FOR_HUMAN`。
 
 首选解析路线是 MinerU，GROBID 补充结构/参考文献，Docling 作为 fallback；解析器输出只能作为后续阅读线索，不能替代原始 PDF 或人工科学判断。
+
+Research 结束时必须写入 `coverage-matrix.md`、`run-budget.json`、`run-ledger.md`、
+`source-registry.md` 和可执行的 `research-setup-wizard.md`。wizard 只告诉用户如何配置推荐路线，
+不自动改 shell/auth/.env；用户不提供 key 时走可恢复的 `NO_KEY_FALLBACK`，并把未覆盖方向、预算
+和下一动作写回项目资产。
 
 ## Prototype and PRD execution contract
 
@@ -87,6 +102,13 @@ Implement 遵守两个写入边界：
 
 `review-content.md` 是双轨交付的单一内容源；Implement 只生成带 claim-level 语义的内容块，Review 再从同一次内容修订生成干净稿和研究者版。工程测试只验证依赖、资产和合并契约，不证明化学判断正确。
 
+Implement/Review 同时维护 `figure-inventory.md`：Figure、Scheme、Table 必须绑定来源 identity、
+原文 page/section/bbox locator、hash、resolution、extraction status 与目标 section/paragraph，
+并可追溯到 claim/citation。当前交付只接受可验证的 `SOURCE` 资产；`ADAPTED`、`REDRAWN`、
+`GENERATED` 先登记、后人工确认，不能伪装成源论文原图。`ChemicalReviewOrchestrator.export_docx()`
+是唯一项目交付 seam，生成 generic chemistry DOCX 和 manifest；DOCX 是 `review-content.md` 的
+可重建 projection，不是第二正文权威。Markdown/DOCX digest 冲突时保留双方并请求人类动作。
+
 ## Review and synchronized delivery contract
 
 Review 接受 agent 对化学推理、意图对齐、修订请求、普通不确定性和科学诚信问题的判断，以及从目标期刊当前官方指南整理的适配要求。它不把字符串扫描或固定总分冒充科学审稿，也不要求研究者填写内部 JSON。
@@ -97,6 +119,7 @@ Review 接受 agent 对化学推理、意图对齐、修订请求、普通不确
 4. 默认 hard stop 只限四类：`FABRICATED_OR_UNFINDABLE_SOURCE`、`MISQUOTED_SOURCE_DATA`、`INVENTED_CHEMICAL_FACT`、`INFERENCE_AS_SOURCE_FACT`。每个 hard stop 必须给出正文与来源 locator；普通分歧、证据空白和不确定性记录为 `NON_BLOCKING` 提示。
 5. 目标期刊要求必须保留当前官方作者指南快照、来源 locator 和内容 digest，并按 `MET`、`GAP` 或 `NOT_APPLICABLE` 记录。没有特定期刊但已确认目标读者时，期刊适配为 `NOT_APPLICABLE`。期刊 gap 可使候选包进入 `REVISION_REQUIRED`，但任何状态都不是接收预测。
 6. Review 同时生成 `review-report.md` 与 `submission-candidate-package.md`。候选包生成前必须验证 Research、PRD、unit-plan、unit 资产和单一内容源均存在且 frontmatter kind 正确；候选包状态只允许 `INTEGRITY_HOLD`、`REVISION_REQUIRED` 或 `SUBMISSION_CANDIDATE`；即使是 `SUBMISSION_CANDIDATE`，也只表示可交给人类科学编辑继续核验，不声明科学有效性或期刊接收。
+   若项目已有 `source-registry.md`、`coverage-matrix.md`、`figure-inventory.md` 或 `*.docx.manifest.md`，候选包会把它们列为交付证据，使来源绑定、覆盖缺口、图表 provenance 和排版 QA 可追溯；它们仍是证据附件，不会成为正文第二权威。
 
 ## Intent confirmation
 

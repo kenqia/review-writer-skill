@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from graphlib import CycleError, TopologicalSorter
 import hashlib
@@ -105,6 +105,8 @@ class UnitMergeResult:
     all_units_merged: bool
     content_revision: int | None
     human_edit_detected: bool
+    readiness: str = "DISCOVERY_READY"
+    content_digest: str = ""
 
 
 class UnitManager:
@@ -193,6 +195,30 @@ class UnitManager:
             )
         )
 
+    def unit_ids(self) -> tuple[str, ...]:
+        """Return declared units in plan order for batch execution."""
+
+        self._require_plan()
+        return self._plan_unit_ids()
+
+    def unit_status(self, unit_id: str) -> str:
+        """Expose a read-only status projection for resumable batches."""
+
+        self._require_plan()
+        if unit_id not in self._plan_unit_ids():
+            raise ValueError(f"Unknown research/writing unit: {unit_id}")
+        return self._unit_status(unit_id)
+
+    def completed_unit_ids(self) -> tuple[str, ...]:
+        """Return units whose local result is complete or centrally merged."""
+
+        self._require_plan()
+        return tuple(
+            unit_id
+            for unit_id in self._plan_unit_ids()
+            if self._unit_status(unit_id) in {"COMPLETE", "MERGED"}
+        )
+
     def submit_result(self, result: UnitResult) -> UnitSubmitResult:
         self._require_plan()
         if result.unit_id not in self._plan_unit_ids():
@@ -222,7 +248,11 @@ class UnitManager:
                 raise ValueError("Completed unit result requires completion evidence.")
             if not _nonblank(result.findings) and not result.claims:
                 raise ValueError("Completed unit result requires findings or claim blocks.")
-            available_evidence = self._available_evidence_ids()
+            available_evidence = self._available_evidence_records()
+            result = replace(
+                result,
+                claims=tuple(_normalize_claim(claim) for claim in result.claims),
+            )
             for claim in result.claims:
                 _validate_claim(claim, available_evidence=available_evidence)
             status = "COMPLETE"
@@ -318,6 +348,7 @@ class UnitManager:
                 all_units_merged=False,
                 content_revision=None,
                 human_edit_detected=False,
+                readiness=self._current_readiness(),
             )
 
         merged_blocks: list[tuple[tuple[str, ...], ClaimBlock]] = []
@@ -332,9 +363,11 @@ class UnitManager:
                     claim_level=resolution.claim_level,
                     contribution_type=resolution.contribution_type,
                     text=resolution.text,
-                    evidence_ids=resolution.evidence_ids,
+                    evidence_ids=tuple(
+                        _canonical_evidence_id(item) for item in resolution.evidence_ids
+                    ),
                 )
-                _validate_claim(claim, available_evidence=self._available_evidence_ids())
+                _validate_claim(claim, available_evidence=self._available_evidence_records())
                 merged_blocks.append((source_units, claim))
             else:
                 merged_blocks.extend(((unit_id,), claim) for unit_id, claim in claims)
@@ -350,6 +383,8 @@ class UnitManager:
                 all_units_merged=all(value == "MERGED" for value in statuses.values()),
                 content_revision=self._current_content_revision(),
                 human_edit_detected=False,
+                readiness=self._current_readiness(),
+                content_digest=self._content_digest(),
             )
 
         merge_key = _merge_key(selected, merged_blocks)
@@ -374,6 +409,8 @@ class UnitManager:
             all_units_merged=all(value == "MERGED" for value in statuses.values()),
             content_revision=revision,
             human_edit_detected=human_edit_detected,
+            readiness="CLAIM_READY" if merged_blocks else self._current_readiness(),
+            content_digest=self._content_digest(),
         )
 
     def _validate_units(
@@ -505,6 +542,7 @@ class UnitManager:
             content = self.content_path.read_text(encoding="utf-8")
             metadata, _ = _split_frontmatter(content)
             revision = int(metadata.get("content_revision", "0")) + 1
+            current_readiness = metadata.get("readiness", "DISCOVERY_READY")
             existing_blocks = _section_value(content, "Content blocks")
             history = _section_value(content, "Merge history")
             preserved = _section_value(content, "Preserved human edits and conflicts")
@@ -533,6 +571,7 @@ class UnitManager:
                 return int(metadata.get("content_revision", "0")), human_edit_detected
         else:
             revision = 0
+            current_readiness = "DISCOVERY_READY"
             existing_blocks = ""
             history = ""
             preserved = ""
@@ -566,10 +605,11 @@ class UnitManager:
         content = _set_section(content, "Preserved human edits and conflicts", preserved)
         content = _replace_frontmatter(
             content,
-            {
-                "content_revision": str(revision),
-                "status": "ACTIVE",
-                "generated_content_blocks_sha256": _content_hash(merged_content),
+                {
+                    "content_revision": str(revision),
+                    "status": "ACTIVE",
+                    "readiness": "CLAIM_READY" if blocks else current_readiness,
+                    "generated_content_blocks_sha256": _content_hash(merged_content),
                 "generated_merge_history_sha256": _content_hash(history),
                 "updated": self.today.isoformat(),
             },
@@ -681,25 +721,85 @@ class UnitManager:
                 text=text_match.group(1).strip(),
                 evidence_ids=tuple(item.strip() for item in evidence.split(",") if item.strip()),
             )
-            _validate_claim(claim, available_evidence=self._available_evidence_ids())
+            claim = _normalize_claim(claim)
+            _validate_claim(claim, available_evidence=self._available_evidence_records())
             claims.append(claim)
         return tuple(claims)
 
     def _available_evidence_ids(self) -> set[str]:
+        return set(self._available_evidence_records())
+
+    def _available_evidence_records(self) -> dict[str, str]:
         literature_path = self.project_root / "literature-set.md"
         if not literature_path.exists():
             raise FileNotFoundError("Unit claims require the saved Research literature-set.md.")
         literature = literature_path.read_text(encoding="utf-8")
-        available: set[str] = set()
+        available: dict[str, str] = {}
+        registry = self._registry_readiness()
         for heading in ("Anchor/core", "Extension", "Background/definition", "Controversy"):
-            available.update(
-                re.findall(
-                    r"^- ([^:\n]+):",
-                    _section_value(literature, heading),
-                    flags=re.MULTILINE,
+            for line in _section_value(literature, heading).splitlines():
+                if not line.startswith("- "):
+                    continue
+                entry = line[2:].strip()
+                identifier, separator, details = entry.partition(": ")
+                if not separator:
+                    identifier, separator, details = entry.partition(":")
+                identifier = identifier.strip()
+                if not identifier:
+                    continue
+                identity_match = re.search(
+                    r"\[evidence-id:\s*([^;\]]+)", details, flags=re.IGNORECASE
                 )
-            )
+                evidence_id = identity_match.group(1).strip() if identity_match else identifier
+                readiness_match = re.search(
+                    r"\[readiness:\s*([A-Z_]+)", details, flags=re.IGNORECASE
+                )
+                readiness = (
+                    readiness_match.group(1).upper()
+                    if readiness_match
+                    else registry.get(_canonical_evidence_id(evidence_id), "EVIDENCE_READY")
+                )
+                for value in (identifier, evidence_id):
+                    available[value] = readiness
+                    available[_canonical_evidence_id(value)] = readiness
         return available
+
+    def _registry_readiness(self) -> dict[str, str]:
+        path = self.project_root / "source-registry.md"
+        if not path.exists():
+            return {}
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return {}
+        result: dict[str, str] = {}
+        header = next((line for line in lines if line.startswith("| Source ID |")), "")
+        if not header:
+            return result
+        columns = [part.strip() for part in header.strip("|").split("|")]
+        # Pre-readiness registries only described route observations.  Inferring
+        # DISCOVERY_READY from those columns would silently downgrade legacy
+        # literature-set entries that never carried a per-source readiness
+        # marker.  New Research runs persist the marker inline in
+        # literature-set.md; a registry may opt into the same contract with an
+        # explicit Readiness column.
+        try:
+            identity_index = columns.index("Identity")
+            readiness_index = columns.index("Readiness")
+        except ValueError:
+            return result
+        for line in lines:
+            if not line.startswith("|") or line == header or set(line.replace("|", "").strip()) <= {"-"}:
+                continue
+            values = [part.strip() for part in line.strip("|").split("|")]
+            if len(values) <= max(identity_index, readiness_index):
+                continue
+            identity = values[identity_index]
+            status = values[readiness_index].upper()
+            if status not in {"DISCOVERY_READY", "EVIDENCE_READY", "CLAIM_READY"}:
+                continue
+            result[_canonical_evidence_id(identity)] = status
+        return result
 
     def _content_has_merge_key(self, merge_key: str) -> bool:
         if not self.content_path.exists():
@@ -749,6 +849,17 @@ class UnitManager:
         metadata, _ = _split_frontmatter(self.content_path.read_text(encoding="utf-8"))
         return int(metadata.get("content_revision", "0"))
 
+    def _current_readiness(self) -> str:
+        if not self.content_path.exists():
+            return "DISCOVERY_READY"
+        metadata, _ = _split_frontmatter(self.content_path.read_text(encoding="utf-8"))
+        return metadata.get("readiness", "DISCOVERY_READY")
+
+    def _content_digest(self) -> str:
+        if not self.content_path.exists():
+            return ""
+        return _content_hash(self.content_path.read_text(encoding="utf-8"))
+
     def _require_plan(self) -> None:
         if not self.plan_path.exists() or not self.unit_dir.exists():
             raise FileNotFoundError("No saved research/writing unit plan.")
@@ -792,7 +903,11 @@ class UnitManager:
         return self.unit_dir / f"{unit_id}.md"
 
 
-def _validate_claim(claim: ClaimBlock, *, available_evidence: set[str]) -> None:
+def _validate_claim(
+    claim: ClaimBlock,
+    *,
+    available_evidence: set[str] | Mapping[str, str],
+) -> None:
     if claim.claim_level not in CLAIM_LEVELS:
         raise ValueError("Unknown claim level: " + claim.claim_level)
     if claim.contribution_type not in CONTRIBUTION_TYPES:
@@ -802,12 +917,57 @@ def _validate_claim(claim: ClaimBlock, *, available_evidence: set[str]) -> None:
     evidence_ids = _nonblank(claim.evidence_ids)
     if claim.claim_level == "SOURCE_FACT" and not evidence_ids:
         raise ValueError("SOURCE_FACT claim blocks require evidence IDs.")
-    missing = set(evidence_ids) - available_evidence
+    records = (
+        {value: "EVIDENCE_READY" for value in available_evidence}
+        if not isinstance(available_evidence, Mapping)
+        else dict(available_evidence)
+    )
+    matched: dict[str, str] = {}
+    missing: set[str] = set()
+    for evidence_id in evidence_ids:
+        canonical = _canonical_evidence_id(evidence_id)
+        if evidence_id in records:
+            matched[evidence_id] = records[evidence_id]
+        elif canonical in records:
+            matched[evidence_id] = records[canonical]
+        else:
+            missing.add(evidence_id)
     if missing:
         raise ValueError(
             "Claim evidence IDs are absent from Research literature-set.md: "
             + ", ".join(sorted(missing))
         )
+    if claim.claim_level == "SOURCE_FACT":
+        not_ready = {
+            evidence_id: readiness
+            for evidence_id, readiness in matched.items()
+            if readiness not in {"EVIDENCE_READY", "CLAIM_READY"}
+        }
+        if not_ready:
+            details = ", ".join(
+                f"{evidence_id} ({readiness})"
+                for evidence_id, readiness in sorted(not_ready.items())
+            )
+            raise ValueError(
+                "SOURCE_FACT claims require EVIDENCE_READY evidence; "
+                "metadata-only records remain discovery-only: " + details
+            )
+
+
+def _normalize_claim(claim: ClaimBlock) -> ClaimBlock:
+    return replace(
+        claim,
+        evidence_ids=tuple(_canonical_evidence_id(item) for item in _nonblank(claim.evidence_ids)),
+    )
+
+
+def _canonical_evidence_id(value: str) -> str:
+    try:
+        from research import canonical_evidence_id
+
+        return canonical_evidence_id(value)
+    except (ImportError, ValueError):
+        return value.strip()
 
 
 def _render_result(result: UnitResult) -> str:

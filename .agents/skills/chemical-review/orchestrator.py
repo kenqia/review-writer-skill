@@ -18,6 +18,7 @@ from typing import Mapping, Sequence
 
 PHASES = ("GRILL", "RESEARCH", "PROTOTYPE", "PRD", "ISSUES", "IMPLEMENT", "REVIEW")
 STATUSES = ("ACTIVE", "WAITING_FOR_HUMAN", "READY_FOR_NEXT_PHASE", "CANDIDATE_READY")
+EXECUTION_MODES = ("continuous", "acceptance")
 
 _INTENT_HEADINGS = {
     "research_question": "Research question",
@@ -26,6 +27,10 @@ _INTENT_HEADINGS = {
     "audience": "Audience or target journal",
     "target_journal": "Audience or target journal",
     "expected_contribution": "Expected contribution",
+    "known_facts": "Known facts",
+    "researcher_context": "Researcher context and prior knowledge",
+    "evidence_standards": "Evidence standards and constraints",
+    "frontier_interview": "Frontier interview",
 }
 _DOMAIN_HEADINGS = {
     "chemical_subfield": "Chemical subfield",
@@ -60,6 +65,16 @@ _ALIASES = {
     "boundary_scenarios": "boundary_scenarios",
     "evidence_expectations": "evidence_expectations",
     "known_capability_limits": "known_capability_limits",
+    "known_facts": "known_facts",
+    "researcher_context": "researcher_context",
+    "background": "researcher_context",
+    "prior_knowledge": "researcher_context",
+    "evidence_standard": "evidence_standards",
+    "evidence_standards": "evidence_standards",
+    "evidence_expectation": "evidence_expectations",
+    "constraints": "evidence_standards",
+    "controversies": "frontier_interview",
+    "research_preferences": "frontier_interview",
 }
 
 
@@ -74,6 +89,15 @@ class WorkflowResult:
     human_action: str
     intent_revision: int
     assets: Mapping[str, str]
+    execution_mode: str = "acceptance"
+    frontier_questions: tuple[str, ...] = ()
+    known_facts: tuple[str, ...] = ()
+
+    @property
+    def mode(self) -> str:
+        """Short compatibility spelling for user-facing callers."""
+
+        return self.execution_mode
 
 
 class ChemicalReviewOrchestrator:
@@ -96,16 +120,43 @@ class ChemicalReviewOrchestrator:
     def domain_path(self) -> Path:
         return self.project_root / "domain-profile.md"
 
-    def start(self, topic: str) -> WorkflowResult:
+    def start(
+        self,
+        topic: str,
+        *,
+        mode: str | None = None,
+        execution_mode: str | None = None,
+        materials: Mapping[str, str | Path] | Sequence[str | Path] | None = None,
+        known_documents: Mapping[str, str | Path] | Sequence[str | Path] | None = None,
+    ) -> WorkflowResult:
         """Start from a topic, or resume if this project already has state."""
 
+        if mode is not None and execution_mode is not None and mode != execution_mode:
+            raise ValueError("mode and execution_mode must agree when both are provided.")
+        selected_mode = self._normalize_execution_mode(
+            execution_mode if execution_mode is not None else mode
+        )
+
+        supplied_materials = materials if materials is not None else known_documents
         if self.state_path.exists():
+            if selected_mode is not None:
+                current = self._require_state().get("execution_mode", "acceptance")
+                if current != selected_mode:
+                    raise ValueError(
+                        "The project execution mode is already persisted as " + current
+                    )
+            if supplied_materials:
+                self._ingest_known_materials(supplied_materials)
             return self.resume()
         topic = topic.strip()
         if not topic:
             raise ValueError("A chemistry review topic or research idea is required.")
 
-        self._write_initial_assets(topic)
+        self._write_initial_assets(
+            topic,
+            execution_mode=selected_mode or "acceptance",
+            materials=supplied_materials,
+        )
         return self.resume()
 
     def resume(self) -> WorkflowResult:
@@ -140,6 +191,9 @@ class ChemicalReviewOrchestrator:
             human_action=metadata.get("human_action", "NONE"),
             intent_revision=int(metadata.get("intent_revision", "0")),
             assets=metadata,
+            execution_mode=metadata.get("execution_mode", "acceptance"),
+            frontier_questions=tuple(self._frontier_questions_from_assets()),
+            known_facts=tuple(self._known_facts_from_intent()),
         )
 
     def continue_grill(self, answers: Mapping[str, str]) -> WorkflowResult:
@@ -395,6 +449,13 @@ class ChemicalReviewOrchestrator:
             human_action=result.human_action,
             research_handoff=result.handoff or "NONE",
             research_handoff_rationale=result.handoff_rationale,
+            readiness=result.assets.get("readiness", getattr(result, "readiness", "DISCOVERY_READY")),
+            readiness_reason=result.assets.get("readiness_reason", "Readiness is recorded in research-evidence.md."),
+            readiness_missing=result.assets.get("readiness_missing", "None recorded."),
+            coverage=result.assets.get("coverage", "None recorded."),
+            stopping_reason=result.assets.get("stopping_reason", "None recorded."),
+            source_registry=result.assets.get("source_registry", "source-registry.md"),
+            run_budget=result.assets.get("run_budget", "run-budget.json"),
             tool_degradation=result.assets.get("tool_degradation", "None recorded."),
             resume_note="Research assets are persisted; rerun this phase after configuring a missing capability or accepting its handoff.",
         )
@@ -611,6 +672,106 @@ class ChemicalReviewOrchestrator:
         )
         return self.resume()
 
+    def submit_ready_unit_results(self, results) -> WorkflowResult:
+        """Submit one execution batch and project a resumable boundary.
+
+        Continuous projects centrally merge the completed batch once. Acceptance
+        projects deliberately stop after the batch so the stage boundary stays
+        visible. Already complete/merged units are skipped on resume, making a
+        retried batch idempotent at the user-facing seam.
+        """
+
+        from units import UnitManager, UnitResult
+
+        self._require_state("IMPLEMENT")
+        batch = tuple(results)
+        if not batch:
+            raise ValueError("A ready-unit batch requires at least one UnitResult.")
+        if not all(isinstance(result, UnitResult) for result in batch):
+            raise TypeError("results must contain only UnitResult values")
+        manager = UnitManager(self.project_root, today=self.today)
+        processed = False
+        latest_progress = None
+        for result in batch:
+            status = manager.unit_status(result.unit_id)
+            if status in {"COMPLETE", "MERGED"}:
+                continue
+            if status != "READY":
+                raise ValueError(
+                    f"Unit {result.unit_id} is not ready; complete its prerequisites first."
+                )
+            latest_progress = manager.submit_result(result)
+            processed = True
+        if not processed:
+            return self.resume()
+
+        all_unit_ids = manager.unit_ids()
+        blocked_ids = tuple(
+            unit_id for unit_id in all_unit_ids if manager.unit_status(unit_id) == "BLOCKED"
+        )
+        ready_ids = manager.ready_unit_ids()
+        all_results_complete = all(
+            manager.unit_status(unit_id) in {"COMPLETE", "MERGED"}
+            for unit_id in all_unit_ids
+        )
+        if blocked_ids:
+            reason = latest_progress.human_action_required if latest_progress else "Resolve the blocked unit."
+            next_action = "HUMAN_ACTION_REQUIRED: " + reason
+            if ready_ids:
+                next_action += " Continue independent ready units: " + ", ".join(ready_ids)
+            status = "ACTIVE" if ready_ids else "WAITING_FOR_HUMAN"
+            self._update_state(
+                status=status,
+                next_action=next_action,
+                unit_ready=", ".join(ready_ids) or "NONE",
+                human_action="REQUIRED",
+                open_questions="Blocked units: " + ", ".join(blocked_ids),
+                resume_note="A hard unit blocker is persisted; resolve the human action, retry, and resume this batch.",
+            )
+            return self.resume()
+        if all_results_complete and self._execution_mode() == "continuous":
+            return self.merge_review_units(manager.completed_unit_ids())
+
+        next_action = (
+            "Acceptance checkpoint: centrally merge completed unit results into review-content.md."
+            if all_results_complete
+            else "Execute ready units independently: " + (", ".join(ready_ids) or "none")
+        )
+        self._update_state(
+            status="READY_FOR_NEXT_PHASE" if all_results_complete else "ACTIVE",
+            next_action=next_action,
+            unit_ready=", ".join(ready_ids) or "NONE",
+            human_action="NONE",
+            open_questions="None recorded.",
+            resume_note=(
+                "Acceptance mode preserves the stage boundary; completed unit results remain isolated until central merge."
+                if all_results_complete
+                else "The execution batch completed; ready dependencies are persisted for the next batch."
+            ),
+        )
+        return self.resume()
+
+    def run_continuous(self, results) -> WorkflowResult:
+        """Execute a continuous-mode ready-unit batch through the public seam."""
+
+        if self._execution_mode() != "continuous":
+            raise ValueError("run_continuous requires a project persisted with continuous mode.")
+        return self.submit_ready_unit_results(results)
+
+    execute_continuous = run_continuous
+
+    def export_docx(self, output_path=None, *, profile=None):
+        """Export the canonical Markdown draft through the single project seam.
+
+        Delivery remains a projection: it reads ``review-content.md`` and
+        never creates a second content source or workflow state.  The import is
+        local so the core orchestrator stays usable in keyless/minimal setups.
+        """
+
+        from delivery import deliver_project
+
+        return deliver_project(self, output_path=output_path, profile=profile)
+
     def retry_review_unit(self, unit_id: str) -> WorkflowResult:
         """Resume one blocked unit after its missing capability or input is addressed."""
 
@@ -678,6 +839,8 @@ class ChemicalReviewOrchestrator:
                 status=status,
                 next_action=next_action,
                 content_revision=str(result.content_revision),
+                content_digest=result.content_digest or None,
+                readiness=result.readiness,
                 human_action="NONE",
                 open_questions=(
                     "A direct human content edit was retained and surfaced in review-content.md."
@@ -1054,7 +1217,34 @@ class ChemicalReviewOrchestrator:
             )
         return self.resume()
 
-    def _write_initial_assets(self, topic: str) -> None:
+    def _write_initial_assets(
+        self,
+        topic: str,
+        *,
+        execution_mode: str = "acceptance",
+        materials: Mapping[str, str | Path] | Sequence[str | Path] | None = None,
+    ) -> None:
+        material_sections = self._extract_known_materials(materials)
+        known_question = material_sections.get("Research question", "").strip()
+        if known_question and not _is_open(known_question):
+            topic = known_question
+        known_facts = self._render_known_facts(material_sections)
+        researcher_context = material_sections.get(
+            "Researcher context and prior knowledge", "Open question: provide only decision-relevant background."
+        )
+        evidence_standards = material_sections.get(
+            "Evidence standards and constraints",
+            "Open question: specify source types, experimental details, and practical constraints.",
+        )
+        default_scope = (
+            "Scope: Open question: define the included chemistry.\n"
+            "Exclusions: Open question: define what is out of scope."
+        )
+        frontier = self._render_frontier_questions(
+            topic=topic,
+            known=material_sections,
+            include_heading=True,
+        )
         intent = _document(
             {
                 "kind": "review-intent",
@@ -1066,13 +1256,16 @@ class ChemicalReviewOrchestrator:
             },
             "# Review Intent\n\n"
             f"## Research question\n{topic}\n\n"
-            "## Core-claim candidates\nOpen question: propose one or more non-trivial claims.\n\n"
-            "## Scope and exclusions\nScope: Open question: define the included chemistry.\n"
-            "Exclusions: Open question: define what is out of scope.\n\n"
-            "## Audience or target journal\nOpen question: identify the intended reader or journal.\n\n"
+            f"## Core-claim candidates\n{material_sections.get('Core-claim candidates', 'Open question: propose one or more non-trivial claims.')}\n\n"
+            f"## Scope and exclusions\n{material_sections.get('Scope and exclusions', default_scope)}\n\n"
+            f"## Audience or target journal\n{material_sections.get('Audience or target journal', 'Open question: identify the intended reader or journal.')}\n\n"
             "## Journal candidates\nNone recorded.\n\n"
-            "## Expected contribution\nOpen question: explain why this review matters now.\n\n"
-            "## Open questions\n- Core claim\n- Scope and exclusions\n- Audience or target journal\n- Expected contribution\n",
+            f"## Expected contribution\n{material_sections.get('Expected contribution', 'Open question: explain why this review matters now.')}\n\n"
+            f"## Known facts\n{known_facts}\n\n"
+            f"## Researcher context and prior knowledge\n{researcher_context}\n\n"
+            f"## Evidence standards and constraints\n{evidence_standards}\n\n"
+            f"## Frontier interview\n{frontier}\n\n"
+            f"## Open questions\n{frontier}",
         )
         domain = _document(
             {"kind": "domain-profile", "schema": "1"},
@@ -1081,8 +1274,8 @@ class ChemicalReviewOrchestrator:
             "## Core systems\nOpen question: identify the molecules, reactions, materials, devices, or analytical objects.\n\n"
             "## Canonical terms and synonyms\n"
             f"Initial topic: {topic}\n\n"
-            "## Boundary scenarios\nOpen question: identify edge cases that affect scope or comparability.\n\n"
-            "## Evidence expectations\nOpen question: decide which source types and experimental details are required.\n\n"
+            f"## Boundary scenarios\n{material_sections.get('Boundary scenarios', 'Open question: identify edge cases that affect scope or comparability.')}\n\n"
+            f"## Evidence expectations\n{material_sections.get('Evidence expectations', 'Open question: decide which source types and experimental details are required.')}\n\n"
             "## Known capability limits\nRecord tool or source limits as they are discovered.\n",
         )
         state = _document(
@@ -1091,18 +1284,20 @@ class ChemicalReviewOrchestrator:
                 "schema": "1",
                 "phase": "GRILL",
                 "status": "ACTIVE",
-                "next_action": "Answer the Grill research question, core-claim, scope/exclusions, audience/journal, and contribution prompts.",
+                "next_action": "Answer only the current Grill frontier questions recorded in review-intent.md; confirm the research question only if it remains open.",
                 "intent_revision": "0",
                 "intent_confirmation": "REQUIRED",
                 "journal_status": "UNSET",
                 "journal_confirmation": "REQUIRED",
+                "execution_mode": execution_mode,
                 "human_action": "NONE",
                 "updated": self.today.isoformat(),
             },
             "# Workflow State\n\n"
             "## Current goal\nClarify the review intent before literature research.\n\n"
             "## Recently completed\nCreated the initial topic-only project assets.\n\n"
-            "## Open questions and risks\nThe Grill prompts are intentionally unresolved.\n\n"
+            "## Open questions and risks\n"
+            f"{frontier}\n\n"
             "## Tool degradation or HUMAN_ACTION_REQUIRED\nNone.\n\n"
             "## Resume note\nThe next invocation continues Grill from these Markdown assets.\n",
         )
@@ -1117,6 +1312,273 @@ class ChemicalReviewOrchestrator:
             if key is None or not isinstance(raw_value, str) or not raw_value.strip():
                 continue
             normalized[key] = raw_value.strip()
+        return normalized
+
+    def _extract_known_materials(
+        self,
+        materials: Mapping[str, str | Path] | Sequence[str | Path] | None,
+    ) -> dict[str, str]:
+        """Extract decision-relevant sections without copying unrelated notes."""
+
+        entries: list[tuple[str, str]] = []
+        if materials is None:
+            candidate_paths = (
+                self.project_root / name
+                for name in (
+                    "proposal.md",
+                    "search-log.md",
+                    "pdf-manifest.md",
+                    "research-notes.md",
+                    "project-context.md",
+                )
+            )
+            materials = tuple(path for path in candidate_paths if path.exists())
+        if isinstance(materials, Mapping):
+            iterable = materials.items()
+        else:
+            iterable = ((str(value), value) for value in materials)
+        for label, value in iterable:
+            text: str
+            if isinstance(value, Path):
+                path = value
+                if not path.exists() or path.suffix.lower() == ".pdf":
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+            elif isinstance(value, str):
+                possible_path = Path(value)
+                try:
+                    is_path = possible_path.exists() and possible_path.suffix.lower() != ".pdf"
+                except OSError:
+                    is_path = False
+                if is_path:
+                    try:
+                        text = possible_path.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                else:
+                    text = value
+            else:
+                continue
+            entries.append((str(label), text))
+
+        result: dict[str, str] = {}
+        for label, text in entries:
+            sections = self._material_sections(text)
+            if not sections:
+                safe = self._scrub_decision_text(text)
+                if safe:
+                    result.setdefault(f"Material: {label}", safe)
+                continue
+            for heading, body in sections.items():
+                canonical = self._canonical_material_heading(heading)
+                safe = self._scrub_decision_text(body)
+                if not safe:
+                    continue
+                if canonical in result and safe not in result[canonical]:
+                    result[canonical] = result[canonical].rstrip() + "\n" + safe
+                else:
+                    result.setdefault(canonical, safe)
+        return result
+
+    @staticmethod
+    def _material_sections(text: str) -> dict[str, str]:
+        headings = list(re.finditer(r"(?m)^##\s+(.+?)\s*$", text))
+        if not headings:
+            return {}
+        sections: dict[str, str] = {}
+        for index, match in enumerate(headings):
+            start = match.end()
+            end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+            sections[match.group(1).strip()] = text[start:end].strip()
+        return sections
+
+    @staticmethod
+    def _canonical_material_heading(heading: str) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", " ", heading.lower()).strip()
+        aliases = {
+            "question": "Research question",
+            "research question": "Research question",
+            "core claim": "Core-claim candidates",
+            "core claims": "Core-claim candidates",
+            "core claim candidates": "Core-claim candidates",
+            "scope": "Scope and exclusions",
+            "scope and exclusions": "Scope and exclusions",
+            "exclusions": "Scope and exclusions",
+            "audience": "Audience or target journal",
+            "audience or target journal": "Audience or target journal",
+            "target reader": "Audience or target journal",
+            "target journal": "Audience or target journal",
+            "expected contribution": "Expected contribution",
+            "value hypothesis": "Expected contribution",
+            "researcher background": "Researcher context and prior knowledge",
+            "background": "Researcher context and prior knowledge",
+            "prior knowledge": "Researcher context and prior knowledge",
+            "researcher context and prior knowledge": "Researcher context and prior knowledge",
+            "evidence standards": "Evidence standards and constraints",
+            "evidence expectations": "Evidence standards and constraints",
+            "constraints": "Evidence standards and constraints",
+            "evidence standards and constraints": "Evidence standards and constraints",
+            "boundary scenarios": "Boundary scenarios",
+            "controversies": "Frontier interview",
+            "research preferences": "Frontier interview",
+            "search preferences": "Frontier interview",
+            "chemical subfield": "Chemical subfield",
+            "core systems": "Core systems",
+            "canonical terms and synonyms": "Canonical terms and synonyms",
+        }
+        return aliases.get(normalized, heading.strip())
+
+    @staticmethod
+    def _scrub_decision_text(value: str) -> str:
+        safe_lines: list[str] = []
+        sensitive = re.compile(
+            r"(?:password|passwd|token|api[_ -]?key|secret|cookie|session|private key|email\s*:|e-mail\s*:)",
+            re.IGNORECASE,
+        )
+        for line in value.splitlines():
+            if sensitive.search(line):
+                continue
+            stripped = line.strip()
+            if stripped:
+                safe_lines.append(stripped)
+        return "\n".join(safe_lines)
+
+    @staticmethod
+    def _render_known_facts(sections: Mapping[str, str]) -> str:
+        facts = [
+            f"- {heading}: {value}"
+            for heading, value in sections.items()
+            if heading not in {"Frontier interview", "Known facts"}
+            and value.strip()
+            and not _is_open(value)
+        ]
+        return "\n".join(facts) or "No project facts extracted yet."
+
+    def _render_frontier_questions(
+        self,
+        *,
+        topic: str,
+        known: Mapping[str, str],
+        include_heading: bool = False,
+    ) -> str:
+        questions: list[str] = []
+        claims = known.get("Core-claim candidates", "")
+        scope = known.get("Scope and exclusions", "")
+        audience = known.get("Audience or target journal", "")
+        contribution = known.get("Expected contribution", "")
+        evidence = known.get("Evidence standards and constraints", "")
+        context = known.get("Researcher context and prior knowledge", "")
+        boundary = known.get("Boundary scenarios", "")
+        if _is_open(claims):
+            questions.append("- Frontier question: Which non-trivial core claim candidate should Research challenge first?")
+        if _is_open(_labeled_value(scope, "Scope")):
+            questions.append("- Frontier question: What chemistry is in scope, including the systems or time boundary?")
+        if _is_open(_labeled_value(scope, "Exclusions")):
+            questions.append("- Frontier question: Which adjacent systems or claims are explicitly excluded?")
+        if _is_open(audience):
+            questions.append("- Frontier question: Who is the target reader, or which journal should guide the format?")
+        if _is_open(contribution):
+            questions.append("- Frontier question: What decision or understanding should this review change now?")
+        if _is_open(evidence):
+            questions.append("- Frontier question: Which evidence standards, source types, and experimental details are required?")
+        if _is_open(context):
+            questions.append("- Frontier question: What decision-relevant background or prior knowledge should shape the search route?")
+        if _is_open(boundary):
+            questions.append("- Frontier question: Which boundary scenarios could change comparability or the stopping decision?")
+        if not questions:
+            questions.append("- No frontier gap detected; review the saved intent and confirm it before Research.")
+        if include_heading:
+            return "\n".join(questions)
+        return "\n".join(questions)
+
+    def _frontier_questions_from_assets(self) -> list[str]:
+        if not self.intent_path.exists() or not self.domain_path.exists():
+            return []
+        intent = self.intent_path.read_text(encoding="utf-8")
+        domain = self.domain_path.read_text(encoding="utf-8")
+        known = {
+            heading: _section_value(intent, heading)
+            for heading in (
+                "Core-claim candidates",
+                "Scope and exclusions",
+                "Audience or target journal",
+                "Expected contribution",
+                "Evidence standards and constraints",
+                "Researcher context and prior knowledge",
+            )
+        }
+        known.update(
+            {
+                "Boundary scenarios": _section_value(domain, "Boundary scenarios"),
+            }
+        )
+        return self._render_frontier_questions(
+            topic=_section_value(intent, "Research question"), known=known
+        ).splitlines()
+
+    def _known_facts_from_intent(self) -> list[str]:
+        if not self.intent_path.exists():
+            return []
+        value = _section_value(
+            self.intent_path.read_text(encoding="utf-8"), "Known facts"
+        )
+        return [line.strip() for line in value.splitlines() if line.strip()]
+
+    def _ingest_known_materials(
+        self, materials: Mapping[str, str | Path] | Sequence[str | Path]
+    ) -> None:
+        extracted = self._extract_known_materials(materials)
+        if not extracted:
+            return
+        intent = self.intent_path.read_text(encoding="utf-8")
+        domain = self.domain_path.read_text(encoding="utf-8")
+        for heading in (
+            "Research question",
+            "Core-claim candidates",
+            "Scope and exclusions",
+            "Audience or target journal",
+            "Expected contribution",
+            "Researcher context and prior knowledge",
+            "Evidence standards and constraints",
+            "Frontier interview",
+        ):
+            value = extracted.get(heading)
+            if value and _is_open(_section_value(intent, heading)):
+                intent = _set_section(intent, heading, value)
+        existing_facts = _section_value(intent, "Known facts")
+        facts = self._render_known_facts(extracted)
+        intent = _set_section(intent, "Known facts", _merge_unique_lines(existing_facts, facts))
+        for heading in (
+            "Chemical subfield",
+            "Core systems",
+            "Canonical terms and synonyms",
+            "Boundary scenarios",
+            "Evidence expectations",
+        ):
+            value = extracted.get(heading)
+            if value and _is_open(_section_value(domain, heading)):
+                domain = _set_section(domain, heading, value)
+        self._write(self.intent_path, intent)
+        self._write(self.domain_path, domain)
+        frontier = "\n".join(self._frontier_questions_from_assets())
+        self._update_state(
+            next_action="Answer only the current Grill frontier questions recorded in review-intent.md; confirm the research question only if it remains open.",
+            open_questions=frontier,
+            resume_note="Known project materials were extracted; unrelated private notes were not collected.",
+        )
+
+    @staticmethod
+    def _normalize_execution_mode(mode: str | None) -> str | None:
+        if mode is None:
+            return None
+        normalized = mode.strip().lower()
+        if normalized not in EXECUTION_MODES:
+            raise ValueError(
+                "execution mode must be one of: " + ", ".join(EXECUTION_MODES)
+            )
         return normalized
 
     def _apply_intent_answers(self, intent: str, answers: Mapping[str, str]) -> str:
@@ -1174,6 +1636,12 @@ class ChemicalReviewOrchestrator:
         if phase and metadata.get("phase") != phase:
             raise ValueError(f"This action requires phase {phase}, found {metadata.get('phase')}")
         return metadata
+
+    def _execution_mode(self) -> str:
+        mode = self._require_state().get("execution_mode", "acceptance")
+        if mode not in EXECUTION_MODES:
+            raise ValueError(f"Unknown persisted execution mode: {mode}")
+        return mode
 
     def _update_state(self, **updates: str | None) -> None:
         metadata, body = _split_frontmatter(self.state_path.read_text(encoding="utf-8"))
@@ -1294,6 +1762,17 @@ def _labeled_value(value: str, label: str) -> str:
 def _is_open(value: str) -> bool:
     normalized = value.strip().lower()
     return not normalized or normalized.startswith("open question") or normalized.startswith("<")
+
+
+def _merge_unique_lines(existing: str, generated: str) -> str:
+    lines: list[str] = []
+    seen: set[str] = set()
+    for line in (existing + "\n" + generated).splitlines():
+        value = line.strip()
+        if value and value not in seen:
+            seen.add(value)
+            lines.append(line)
+    return "\n".join(lines) or "No project facts extracted yet."
 
 
 def _parse_bullets(value: str) -> dict[str, str]:

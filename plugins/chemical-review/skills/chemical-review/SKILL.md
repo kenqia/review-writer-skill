@@ -7,6 +7,12 @@ description: "Use when a researcher wants to plan, research, draft, review, or i
 
 这是一个以研究者为主导、以模型为研究同伴的化学文献综述工作流。它使用一个唯一的 orchestrator seam，维护少量 Markdown 研究资产，并把 Review 反馈路由回最早失效阶段。
 
+流程中的 frontier interview、一次性 Research 资产和 primary-source discipline 借鉴了
+Matt Pocock 的 [`mattpocock/skills`](https://github.com/mattpocock/skills)，属于跨领域工程方法迁移，
+不是化学证据、科学有效性或期刊接收权威。这里对其流程做了化学领域适配：加入
+`DISCOVERY_READY → EVIDENCE_READY → CLAIM_READY`、合法全文与 locator、预算/coverage stopping、
+no-key fallback、图表 provenance、continuous/acceptance 双模式和 central claim merge。
+
 ## Start or resume
 
 1. 读取 [WORKFLOW.md](WORKFLOW.md)（阶段、状态、Research/Prototype/PRD/Review 行为和确认语义）与 [ASSET-TEMPLATES.md](ASSET-TEMPLATES.md)（意图、领域、工作流和阶段资产的字段及人类可读结构）；当本次运行要启动、恢复或校验资产时才读取它们。完成标准：两份参考文件均已读完，且当前运行采用的阶段词和字段来自同一份模板。

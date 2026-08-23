@@ -408,6 +408,33 @@ class UnitImplementationTests(unittest.TestCase):
             ):
                 self.assertIn(term, content)
 
+    def test_legacy_literature_without_inline_readiness_keeps_evidence_compatibility(self):
+        """Old literature-set entries remain evidence-ready until explicitly downgraded."""
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._implementation_project(
+                project_dir,
+                (self._unit("legacy-source-fact", kind="section_claim"),),
+            )
+
+            submitted = orchestrator.submit_review_unit_result(
+                UnitResult(
+                    unit_id="legacy-source-fact",
+                    completion_evidence="A legacy fixture supplied a source-backed claim.",
+                    findings=("The selected legacy fixture reports the bounded finding.",),
+                    claims=(
+                        ClaimBlock(
+                            section="Evidence notes",
+                            claim_level="SOURCE_FACT",
+                            contribution_type="explanation",
+                            text="The selected study reports the bounded finding.",
+                            evidence_ids=("paper-1",),
+                        ),
+                    ),
+                    remaining_uncertainty="The legacy fixture does not record per-source readiness.",
+                )
+            )
+            self.assertEqual(submitted.status, "READY_FOR_NEXT_PHASE")
+
     def test_later_merge_preserves_and_surfaces_direct_human_content_edit(self):
         with TemporaryDirectory() as project_dir:
             orchestrator = self._implementation_project(

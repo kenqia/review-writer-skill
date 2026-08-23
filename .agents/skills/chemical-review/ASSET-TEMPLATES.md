@@ -36,6 +36,18 @@ journal_guide_locator: <official guide locator when selected>
 ## Expected contribution
 <!-- 为什么现在需要这篇综述，它可能改变什么理解或研究决策。 -->
 
+## Known facts
+<!-- 从用户提供的 proposal、search log、PDF manifest 等项目材料中提取的已知信息；只保留与研究路线有关的内容。 -->
+
+## Researcher context and prior knowledge
+<!-- 只记录会改变检索路线、比较维度或证据解释的研究背景；不收集无关敏感个人信息。 -->
+
+## Evidence standards and constraints
+<!-- 原始论文、合法全文、页码/章节 locator、时间边界、访问和工具约束。 -->
+
+## Frontier interview
+<!-- 当前尚未解决、会改变研究路线的最小问题集合；每轮只推进当前 frontier。 -->
+
 ## Open questions
 <!-- 需要 Grill 继续追问或由研究者决定的事项。 -->
 ```
@@ -80,6 +92,7 @@ status: ACTIVE | WAITING_FOR_HUMAN | READY_FOR_NEXT_PHASE | CANDIDATE_READY
 next_action: <one concrete action>
 intent_revision: 0
 intent_confirmation: NOT_REQUIRED | REQUIRED | CONFIRMED
+execution_mode: continuous | acceptance
 human_action: NONE | REQUIRED
 journal_status: UNSET | PROPOSED | SELECTED | NOT_REQUIRED
 journal_confirmation: REQUIRED | CONFIRMED | NOT_APPLICABLE
@@ -183,6 +196,7 @@ intent_revision: 0
 status: ACTIVE | WAITING_FOR_HUMAN | READY_FOR_NEXT_PHASE
 human_action: NONE | REQUIRED
 research_handoff: NONE | PROTOTYPE | PRD
+readiness: DISCOVERY_READY | EVIDENCE_READY | CLAIM_READY
 next_action: <one concrete action>
 updated: YYYY-MM-DD
 ---
@@ -200,9 +214,47 @@ updated: YYYY-MM-DD
 ## Tool route
 ## Tool degradation or HUMAN_ACTION_REQUIRED
 ## Research handoff
+## Coverage and stopping
+<!-- 检索路径覆盖、连续无新增重要方向、边际收益和显式未覆盖区域；不使用固定论文数。 -->
 ## Preserved human edits and conflicts
 ## Human notes
 ```
+
+### `source-registry.md`
+
+```md
+---
+kind: research-source-registry
+schema: 1
+updated: YYYY-MM-DD
+---
+
+# Research Source Registry
+
+<!-- 每条来源保留独立 identity、source kind、access basis、metadata/full-text/parser 状态、locator、digest、优先级和降级原因。用户 PDF 为 USER_AUTHORIZED；云解析必须有项目级明确授权。若使用 Readiness 列，必须显式写 DISCOVERY_READY/EVIDENCE_READY/CLAIM_READY。 -->
+```
+
+### `coverage-matrix.md`
+
+```md
+---
+kind: research-coverage-matrix
+schema: 1
+updated: YYYY-MM-DD
+---
+
+# Research Coverage Matrix
+
+<!-- 路径覆盖、query/request、new source、marginal gain、连续 no-new rounds 和 stopping reason。论文数量不是停止条件。 -->
+```
+
+### `run-budget.json` / `run-ledger.md`
+
+`run-budget.json` 是机器可读 ledger；`run-ledger.md` 是其人类可读投影。至少记录 query、request、input/output token estimate、concurrency、retry、cache hit、parser pages/chunks、run id 和预算上限。冷启动从项目资产恢复，不重复传输未变化内容。
+
+### `research-setup-wizard.md`
+
+能力探测后生成的人类可执行配置清单。它只说明 adapter、权限、合法全文和恢复动作，不自动修改 shell、auth、environment 或 Codex 配置；拒绝配置时使用 no-key fallback。
 
 ### `literature-set.md`
 
@@ -216,12 +268,28 @@ updated: YYYY-MM-DD
 
 # Layered Literature Set
 
+<!-- 新生成的条目带 [readiness: DISCOVERY_READY|EVIDENCE_READY]；没有该标记的旧项目条目保持兼容默认，只有显式 readiness 才改变其主张资格。 -->
+
 ## Anchor/core
 ## Extension
 ## Background/definition
 ## Controversy
 ## Preserved human edits and conflicts
 ## Human notes
+```
+
+### `figure-inventory.md`
+
+```md
+---
+kind: figure-inventory
+schema: 1
+updated: YYYY-MM-DD
+---
+
+# Figure/Scheme/Table Inventory
+
+<!-- 每个图、反应 Scheme 和表格都保留 source_id、page/bbox 或 section locator、hash、resolution、extraction status、target section/paragraph、claim/citation IDs 和 transform history。只有 SOURCE + VERIFIED 资产可进入交付；ADAPTED/REDRAWN/GENERATED 必须显式保留状态并在交付前人工确认。 -->
 ```
 
 ## Prototype and PRD assets
@@ -378,6 +446,40 @@ updated: YYYY-MM-DD
 ## Review and delivery assets
 
 Review 的四个输出必须在同一次运行中由同一个 `review-content.md` 修订生成。它们不是四份可独立演化的正文。
+
+### `journal-profile.md`
+
+```md
+---
+kind: journal-profile
+schema: 1
+status: NOT_SELECTED | SELECTED
+target_journal: <journal or blank>
+guide_locator: <official author-guide URL>
+guide_digest: <sha256>
+adaptation_status: MET | GAP | NOT_APPLICABLE
+---
+
+# Journal Profile
+
+<!-- 只接受当前官方作者指南快照；指南变化或不可用时保留旧 profile，并把 recovery_action 写成 HUMAN_ACTION_REQUIRED。未指定期刊时保持 NOT_SELECTED，不猜测目标格式。 -->
+```
+
+### `generic-chemistry-draft.docx.manifest.md`
+
+```md
+---
+kind: docx-export-manifest
+schema: 1
+profile_status: NOT_SELECTED | SELECTED
+source_digest: <review-content.md sha256>
+output_digest: <docx sha256>
+---
+
+# DOCX Export Manifest
+
+<!-- DOCX 是 canonical review-content.md 的可重建 projection；manifest 记录 headings/references/figures/schemes/tables/equations、resolution 和 layout QA。digest 冲突时保留现有文件并暂停，不静默覆盖。 -->
+```
 
 ### `clean-manuscript.md`
 

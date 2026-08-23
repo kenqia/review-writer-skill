@@ -14,6 +14,11 @@
 逐步形成干净稿、研究者标注版、审查报告和候选投稿包；它不证明科学有效性、不复现实验、
 不预测期刊接收，也不取代人类科学编辑。
 
+这套七阶段流程部分借鉴并跨领域应用了 [Matt Pocock 的 `mattpocock/skills`](https://github.com/mattpocock/skills)：
+我们吸收 frontier interview、primary-source discipline 和可恢复研究资产，但没有把该仓库当作
+化学科学权威。Chemical Review 额外加入 readiness 三层、全文 locator、coverage/budget stopping、
+no-key fallback、source-bound 图表和 central merge，以守住化学证据边界。
+
 ## 源码与 plugin 边界
 
 - **唯一 canonical source**：`.agents/skills/chemical-review/`
@@ -82,6 +87,18 @@ Research 默认只有真实的 OpenAlex discovery adapter；其他路线通过�
 路线是 OpenAlex/Semantic Scholar/Crossref → PubChem/ChEBI → Unpaywall/Europe PMC/CORE →
 MinerU/GROBID/Docling。缺少 API、配额受限或全文受限时，流程必须保留降级信息，必要时请求
 用户提供 DOI、题录、合法全文或授权 PDF；摘要、排名、解析器输出和模型推断都不能伪装成文献事实。
+
+Research 的 `DISCOVERY_READY → EVIDENCE_READY → CLAIM_READY` 是资格门，不是论文数量评分。默认
+`continuous` 模式会批量推进可执行单元，只在硬阻塞或 `HUMAN_ACTION_REQUIRED` 暂停；需要逐阶段
+人工验收时可持久化 `acceptance` 模式。无 key 时生成可执行 `research-setup-wizard.md` 并保留
+`NO_KEY_FALLBACK`，不会自动修改 shell/auth/.env，也不会把用户 PDF 上传到云端 parser。
+
+图表在 Research/Implement 阶段登记到 `figure-inventory.md`：Figure、Scheme、Table 都要有来源
+identity、page/section/bbox locator、hash、resolution、extraction status 和正文放置绑定。当前
+交付允许源论文图的裁剪/缩放/重排；adapted、redrawn 或 generated 资产先登记并 fail-closed，
+等人类确认。`ChemicalReviewOrchestrator.export_docx()` 从唯一的 `review-content.md` 生成可重建的
+generic chemistry DOCX 和 manifest；选定期刊后再由当前官方指南快照生成 `JournalProfile`，未指定
+期刊保持 `NOT_SELECTED`，不猜格式。
 
 ## 验证与发布
 

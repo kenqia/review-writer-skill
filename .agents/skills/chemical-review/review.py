@@ -336,6 +336,25 @@ class ReviewRunner:
                     f"{name} has the wrong asset kind; expected {expected_kind}."
                 )
             assets.append(name)
+        optional_delivery_assets = {
+            "source-registry.md": "research-source-registry",
+            "coverage-matrix.md": "research-coverage-matrix",
+            "figure-inventory.md": "figure-inventory",
+        }
+        for name, expected_kind in optional_delivery_assets.items():
+            path = self.project_root / name
+            if not path.exists():
+                continue
+            metadata, _ = _split_frontmatter(path.read_text(encoding="utf-8"))
+            if metadata.get("kind") != expected_kind:
+                raise ValueError(
+                    f"{name} has the wrong asset kind; expected {expected_kind}."
+                )
+            assets.append(name)
+        assets.extend(
+            str(path.relative_to(self.project_root))
+            for path in sorted(self.project_root.glob("*.docx.manifest.md"))
+        )
         unit_paths = tuple(sorted((self.project_root / "units").glob("*.md")))
         if not unit_paths:
             raise FileNotFoundError("Submission candidate requires at least one saved unit asset.")

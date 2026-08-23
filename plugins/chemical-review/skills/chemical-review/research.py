@@ -13,9 +13,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 from typing import Callable, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from orchestrator import _document, _section_value, _set_section, _split_frontmatter
@@ -23,6 +25,52 @@ from orchestrator import _document, _section_value, _set_section, _split_frontma
 
 class CapabilityUnavailable(RuntimeError):
     """An adapter cannot perform its advertised capability."""
+
+
+READINESS_LEVELS = ("DISCOVERY_READY", "EVIDENCE_READY", "CLAIM_READY")
+_DOI_PATTERN = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
+
+
+def canonical_evidence_id(value: str) -> str:
+    """Return a stable, non-lossy identity for a DOI or source URL."""
+
+    raw = str(value).strip().strip("<>[]{}\"'")
+    if not raw:
+        raise ValueError("Evidence identity cannot be blank.")
+    raw = raw.replace("\u200b", "")
+
+    if raw.lower().startswith(("http://", "https://")):
+        parsed = urlsplit(raw)
+        host = (parsed.hostname or "").lower()
+        if host in {"doi.org", "dx.doi.org", "www.doi.org"}:
+            doi = unquote(parsed.path).lstrip("/").rstrip(".,;)")
+            if _DOI_PATTERN.fullmatch(doi):
+                return "doi:" + doi.lower()
+        if not host:
+            return raw
+        netloc = host
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        if port is not None and not (
+            (parsed.scheme.lower() == "http" and port == 80)
+            or (parsed.scheme.lower() == "https" and port == 443)
+        ):
+            netloc = f"{netloc}:{port}"
+        path = unquote(parsed.path) or "/"
+        if path != "/":
+            path = path.rstrip("/")
+        return urlunsplit((parsed.scheme.lower(), netloc, path, parsed.query, ""))
+
+    candidate = raw[4:].strip() if raw.lower().startswith("doi:") else raw
+    candidate = candidate.rstrip(".,;)")
+    if _DOI_PATTERN.fullmatch(candidate):
+        return "doi:" + candidate.lower()
+    return raw
+
+
+canonical_source_identity = canonical_evidence_id
 
 
 class OpenAlexDiscoveryAdapter:
@@ -164,6 +212,82 @@ class CapabilityIssue:
 
 
 @dataclass(frozen=True)
+class CapabilityStatus:
+    """A non-invasive capability probe result.
+
+    Probing only reports the configured adapter surface and local executable
+    availability. It never reads or prints credentials and never mutates shell
+    or Codex configuration.
+    """
+
+    capability: str
+    provider: str
+    available: bool
+    configured: bool
+    recommended: bool
+    reason: str
+    setup_action: str
+
+
+@dataclass(frozen=True)
+class ResearchBudget:
+    """Adjustable run limits; ``None`` means this limit is not imposed."""
+
+    max_queries: int | None = None
+    max_requests: int | None = None
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+    max_parser_pages: int | None = None
+    max_retries: int | None = None
+    max_concurrency: int = 1
+    max_no_new_rounds: int | None = None
+    min_marginal_gain: int = 0
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "max_queries",
+            "max_requests",
+            "max_input_tokens",
+            "max_output_tokens",
+            "max_parser_pages",
+            "max_retries",
+            "max_no_new_rounds",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and (not isinstance(value, int) or value < 0):
+                raise ValueError(f"{field_name} must be a non-negative integer or None")
+        if self.max_concurrency < 1:
+            raise ValueError("max_concurrency must be positive")
+        if self.min_marginal_gain < 0:
+            raise ValueError("min_marginal_gain must be non-negative")
+
+
+# Public spelling used by callers that think in terms of a per-run ledger.
+RunBudget = ResearchBudget
+
+
+@dataclass(frozen=True)
+class SourceRecord:
+    """Project-local identity and provenance record for one source route."""
+
+    source_id: str
+    identity: str
+    title: str
+    source_kind: str
+    provider: str
+    access_basis: str
+    local_path: str = ""
+    content_digest: str = ""
+    metadata_status: str = "UNKNOWN"
+    full_text_status: str = "UNKNOWN"
+    parser_status: str = "UNKNOWN"
+    locators: tuple[str, ...] = ()
+    media_ids: tuple[str, ...] = ()
+    priority: str = "NORMAL"
+    failure_reason: str = ""
+
+
+@dataclass(frozen=True)
 class ResearchConfig:
     """Adapters supplied by a user, test, or future integration layer."""
 
@@ -171,12 +295,31 @@ class ResearchConfig:
     entities: Sequence[EntityAdapter] = ()
     full_text: Sequence[FullTextAdapter] = ()
     parsers: Sequence[ParserAdapter] = ()
+    user_pdfs: Sequence[str | Path] = ()
+    cloud_parser_consent: bool = False
+    allow_no_key_fallback: bool = False
+    budget: ResearchBudget = field(default_factory=ResearchBudget)
+    cache_enabled: bool = True
+    run_id: str = ""
 
     @classmethod
     def default(cls) -> "ResearchConfig":
         """Return the smallest real route; other capabilities remain replaceable fallbacks."""
 
         return cls(discovery=(OpenAlexDiscoveryAdapter.from_environment(),))
+
+    @classmethod
+    def no_key_fallback(cls, **kwargs: object) -> "ResearchConfig":
+        """Return a bounded, credential-free configuration.
+
+        The fallback intentionally has no network adapter. Existing local
+        PDFs, explicit metadata and later user-provided adapters can still be
+        added through keyword arguments.
+        """
+
+        kwargs["allow_no_key_fallback"] = True
+        kwargs.setdefault("discovery", ())
+        return cls(**kwargs)  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)
@@ -193,7 +336,14 @@ class ResearchRunResult:
     papers: tuple[PaperRecord, ...]
     full_texts: tuple[FullTextResult, ...]
     parsed: tuple[ParsedDocument, ...]
+    readiness: str
+    readiness_reason: str
+    readiness_missing: tuple[str, ...]
     assets: Mapping[str, str] = field(default_factory=dict)
+    coverage: tuple[Mapping[str, object], ...] = ()
+    stopping_reason: str = ""
+    budget_ledger: Mapping[str, object] = field(default_factory=dict)
+    source_registry: tuple[SourceRecord, ...] = ()
 
 
 SEARCH_PATHS = (
@@ -227,6 +377,7 @@ LEGAL_ACCESS_BASES = {"OPEN_ACCESS", "USER_AUTHORIZED", "INSTITUTION_AUTHORIZED"
 EVIDENCE_TRACKED_SECTIONS = (
     "Research question",
     "Project domain context",
+    "Readiness",
     "Search paths",
     "Terms and chemistry entities",
     "Evidence notes",
@@ -235,6 +386,7 @@ EVIDENCE_TRACKED_SECTIONS = (
     "Major uncertainties",
     "Tool route",
     "Tool degradation or HUMAN_ACTION_REQUIRED",
+    "Coverage and stopping",
     "Research handoff",
 )
 LITERATURE_TRACKED_SECTIONS = (
@@ -243,6 +395,10 @@ LITERATURE_TRACKED_SECTIONS = (
     "Background/definition",
     "Controversy",
 )
+
+LEDGER_SCHEMA = 1
+CACHE_SCHEMA = 1
+REGISTRY_SCHEMA = 1
 
 
 class ResearchRunner:
@@ -260,6 +416,26 @@ class ResearchRunner:
     def literature_path(self) -> Path:
         return self.project_root / "literature-set.md"
 
+    @property
+    def registry_path(self) -> Path:
+        return self.project_root / "source-registry.md"
+
+    @property
+    def coverage_path(self) -> Path:
+        return self.project_root / "coverage-matrix.md"
+
+    @property
+    def ledger_path(self) -> Path:
+        return self.project_root / "run-budget.json"
+
+    @property
+    def cache_path(self) -> Path:
+        return self.project_root / "research-cache.json"
+
+    @property
+    def setup_wizard_path(self) -> Path:
+        return self.project_root / "research-setup-wizard.md"
+
     def run(
         self,
         intent_markdown: str,
@@ -269,6 +445,39 @@ class ResearchRunner:
         intent_revision: str = "0",
     ) -> ResearchRunResult:
         config = config or ResearchConfig()
+        budget = config.budget
+        ledger = self._load_ledger()
+        cache = self._load_cache() if config.cache_enabled else _empty_cache()
+        previous_snapshot = {
+            key: ledger.get(key, 0)
+            for key in (
+                "query_count",
+                "request_count",
+                "input_tokens",
+                "output_tokens",
+                "concurrency",
+                "retries",
+                "cache_hits",
+                "parser_pages",
+            )
+        }
+        history = ledger.setdefault("run_history", [])
+        if isinstance(history, list) and any(value for value in previous_snapshot.values()):
+            history.append(previous_snapshot)
+        for key in (
+            "query_count",
+            "request_count",
+            "input_tokens",
+            "output_tokens",
+            "retries",
+            "cache_hits",
+            "parser_pages",
+        ):
+            ledger[key] = 0
+        ledger["concurrency"] = budget.max_concurrency
+        ledger["runs_started"] = int(ledger.get("runs_started", 0)) + 1
+        ledger["last_run_id"] = config.run_id or self._run_id(intent_markdown, domain_markdown)
+        ledger["budget"] = _budget_dict(budget)
         human_edit_detected = any(
             _asset_has_direct_edit(path, titles)
             for path, titles in (
@@ -283,14 +492,35 @@ class ResearchRunner:
         full_text_adapters = _preferred(config.full_text, PREFERRED_FULL_TEXT)
         parser_adapters = _preferred(config.parsers, PREFERRED_PARSERS)
         terms, issues = self._expand_terms(topic, domain_context, entity_adapters)
-        papers, path_queries, discovery_issues = self._discover(
-            topic, terms, domain_context, discovery_adapters
+        papers, path_queries, discovery_issues, coverage, stopping_reason = self._discover(
+            topic,
+            terms,
+            domain_context,
+            discovery_adapters,
+            budget=budget,
+            cache=cache,
+            ledger=ledger,
         )
         issues.extend(discovery_issues)
         full_texts, parsed, parsing_issues = self._retrieve_and_parse(
-            papers, full_text_adapters, parser_adapters
+            papers,
+            full_text_adapters,
+            parser_adapters,
+            config=config,
+            budget=budget,
+            cache=cache,
+            ledger=ledger,
         )
         issues.extend(parsing_issues)
+        if config.allow_no_key_fallback and not discovery_adapters:
+            issues.append(
+                CapabilityIssue(
+                    "discovery/metadata",
+                    "no-key fallback",
+                    "NO_KEY_FALLBACK: credential-free bounded discovery selected; external discovery adapters were not configured",
+                    "Add a user DOI/题录/PDF or configure an adapter later; rerun resumes from the saved ledger and cache.",
+                )
+            )
         issues = _dedupe_issues(issues)
 
         covered = tuple(path for path, _ in SEARCH_PATHS if path_queries.get(path, 0) > 0)
@@ -299,10 +529,21 @@ class ResearchRunner:
         )
         uncertainties = self._uncertainties(papers, parsed, issues, uncovered)
         has_discovery = bool(papers)
-        blocking = not has_discovery or any(issue.blocking for issue in issues) or human_edit_detected
+        blocking = (
+            (not has_discovery and not config.allow_no_key_fallback)
+            or any(issue.blocking for issue in issues)
+            or human_edit_detected
+        )
         status = "WAITING_FOR_HUMAN" if blocking else "READY_FOR_NEXT_PHASE"
         human_action = "REQUIRED" if blocking else "NONE"
-        handoff, handoff_rationale = self._handoff(papers, parsed, uncovered, issues, blocking)
+        handoff, handoff_rationale = self._handoff(
+            papers,
+            parsed,
+            uncovered,
+            issues,
+            blocking,
+            allow_no_key_fallback=config.allow_no_key_fallback,
+        )
         if human_edit_detected:
             next_action = (
                 "Review the preserved human edits and conflicts, confirm the accepted wording, "
@@ -318,6 +559,11 @@ class ResearchRunner:
                 "Configure at least one discovery adapter or provide an authorized literature source, "
                 "then rerun Research."
             )
+        elif config.allow_no_key_fallback and not papers:
+            next_action = (
+                "Review the bounded no-key discovery scope and add DOI, metadata, or authorized PDFs "
+                "only where the uncovered directions matter."
+            )
         else:
             next_action = (
                 "Review the Research evidence package, covered directions, uncovered high-impact areas, "
@@ -326,6 +572,19 @@ class ResearchRunner:
 
         route_summary = self._route_summary(config)
         degradation = self._issue_summary(issues)
+        source_registry = self._source_registry(
+            papers,
+            full_texts,
+            parsed,
+            config.user_pdfs,
+            issues,
+        )
+        readiness = "EVIDENCE_READY" if parsed else "DISCOVERY_READY"
+        readiness_missing, readiness_reason = self._readiness_details(
+            papers, full_texts, parsed, issues, config
+        )
+        self._persist_ledger(ledger)
+        self._persist_cache(cache)
         self._persist(
             topic=topic,
             domain_context=domain_context,
@@ -346,6 +605,14 @@ class ResearchRunner:
             parsed=parsed,
             issues=issues,
             degradation=degradation,
+            coverage=coverage,
+            stopping_reason=stopping_reason,
+            budget_ledger=ledger,
+            source_registry=source_registry,
+            setup_wizard=self.setup_wizard(config),
+            readiness=readiness,
+            readiness_reason=readiness_reason,
+            readiness_missing=readiness_missing,
         )
         return ResearchRunResult(
             status=status,
@@ -364,7 +631,20 @@ class ResearchRunner:
                 "research_handoff": handoff or "NONE",
                 "research_handoff_rationale": handoff_rationale,
                 "tool_degradation": degradation,
+                "coverage": json.dumps(coverage, ensure_ascii=False, sort_keys=True),
+                "stopping_reason": stopping_reason,
+                "source_registry": str(self.registry_path),
+                "run_budget": str(self.ledger_path),
+                "setup_wizard": str(self.setup_wizard_path),
+                "readiness": readiness,
             },
+            coverage=tuple(coverage),
+            stopping_reason=stopping_reason,
+            budget_ledger=dict(ledger),
+            source_registry=tuple(source_registry),
+            readiness=readiness,
+            readiness_reason=readiness_reason,
+            readiness_missing=tuple(readiness_missing),
         )
 
     def _handoff(
@@ -374,9 +654,18 @@ class ResearchRunner:
         uncovered: Sequence[str],
         issues: Sequence[CapabilityIssue],
         blocking: bool,
+        *,
+        allow_no_key_fallback: bool = False,
     ) -> tuple[str | None, str]:
         if blocking:
             return None, "No handoff while a required human action or discovery blocker remains."
+        if allow_no_key_fallback and not papers:
+            return (
+                "PROTOTYPE",
+                "A bounded no-key discovery handoff is available: the intent and seven search paths are "
+                "saved, while source facts and full-text evidence remain unavailable until the researcher "
+                "adds a DOI, metadata record, or authorized PDF.",
+            )
         prototype_reasons: list[str] = []
         if uncovered:
             prototype_reasons.append("high-impact search paths remain uncovered")
@@ -393,6 +682,296 @@ class ResearchRunner:
             "Direct PRD is proposed because all planned paths produced candidates, locator-bearing parses exist, "
             "and no capability degradation or controversy risk was recorded; the researcher still accepts the handoff.",
         )
+
+    def _readiness_details(
+        self,
+        papers: Sequence[PaperRecord],
+        full_texts: Sequence[FullTextResult],
+        parsed: Sequence[ParsedDocument],
+        issues: Sequence[CapabilityIssue],
+        config: ResearchConfig,
+    ) -> tuple[tuple[str, ...], str]:
+        missing: list[str] = []
+        if not papers:
+            missing.append("stable source identities")
+        if papers and not full_texts:
+            missing.append("legal full text with access basis and locator")
+        if full_texts and not parsed:
+            missing.append("page/section locator-bearing parser output")
+        if config.allow_no_key_fallback and not papers:
+            return tuple(missing), (
+                "DISCOVERY_READY only: no-key fallback preserved the intent and search coverage, "
+                "but no source identity or source-fact evidence was supplied."
+            )
+        if parsed:
+            return tuple(missing), (
+                "EVIDENCE_READY: legal full text and locator-bearing parser output are available; "
+                "claim-level binding and chemical comparability still require downstream review."
+            )
+        return tuple(missing), "DISCOVERY_READY: metadata discovery is not sufficient for source-fact claims."
+
+    def detect_capabilities(
+        self, config: ResearchConfig | None = None
+    ) -> tuple[CapabilityStatus, ...]:
+        """Probe configured routes without network calls or credential access."""
+
+        config = config or ResearchConfig()
+        configured = {
+            getattr(adapter, "name", adapter.__class__.__name__)
+            for group in (config.discovery, config.entities, config.full_text, config.parsers)
+            for adapter in group
+        }
+        statuses: list[CapabilityStatus] = []
+        for capability, provider, _use in DEFAULT_ROUTES:
+            is_configured = provider in configured
+            local_name = provider.lower().replace(" ", "")
+            local_available = bool(shutil.which(local_name)) if capability == "PDF parsing" else False
+            available = is_configured or local_available
+            if is_configured:
+                reason = "adapter configured for this run"
+                setup_action = "No setup required; inspect the recorded route and degradation notes."
+            elif local_available:
+                reason = "a local executable with the provider name is available"
+                setup_action = "Connect the local executable through a replaceable adapter."
+            else:
+                reason = "not configured or locally detected; no external probe was attempted"
+                setup_action = f"Configure a {provider} adapter or choose the documented fallback route."
+            statuses.append(
+                CapabilityStatus(
+                    capability=capability,
+                    provider=provider,
+                    available=available,
+                    configured=is_configured,
+                    recommended=provider
+                    in (*PREFERRED_DISCOVERY, *PREFERRED_ENTITIES, *PREFERRED_FULL_TEXT, *PREFERRED_PARSERS),
+                    reason=reason,
+                    setup_action=setup_action,
+                )
+            )
+        return tuple(statuses)
+
+    capability_probe = detect_capabilities
+
+    def setup_wizard(self, config: ResearchConfig | None = None) -> str:
+        """Render a human-executable setup guide; never edits user configuration."""
+
+        statuses = self.detect_capabilities(config)
+        lines = [
+            "# Research Setup Wizard",
+            "",
+            "This is a manual checklist. It does not edit shell startup files, auth files, environment variables, or Codex configuration.",
+            "",
+            "## Recommended route",
+            "",
+            "1. Confirm the project scope and authorized source folders.",
+            "2. Configure only the adapters needed for the uncovered directions.",
+            "3. Rerun Research; the project cache and run ledger will reuse unchanged work.",
+            "4. If configuration is declined, use `ResearchConfig.no_key_fallback()` or provide DOI/题录/PDF inputs.",
+            "",
+            "## Capability probe",
+            "",
+            "| Capability | Provider | Available | Configured | Recovery/setup action |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for status in statuses:
+            lines.append(
+                f"| {status.capability} | {status.provider} | "
+                f"{'yes' if status.available else 'no'} | "
+                f"{'yes' if status.configured else 'no'} | {status.setup_action} |"
+            )
+        lines.extend(
+            [
+                "",
+                "## Project PDF authorization",
+                "",
+                "User PDFs remain local and are registered with `USER_AUTHORIZED` access basis. A cloud parser may receive them only after explicit project-level consent; otherwise the local or no-key fallback is retained.",
+                "",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _run_id(self, intent_markdown: str, domain_markdown: str) -> str:
+        digest = hashlib.sha256(
+            (intent_markdown + "\n" + domain_markdown).encode("utf-8")
+        ).hexdigest()[:12]
+        return f"{self.today.isoformat()}-{digest}"
+
+    def _load_ledger(self) -> dict[str, object]:
+        if not self.ledger_path.exists():
+            return _empty_ledger()
+        try:
+            value = json.loads(self.ledger_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return _empty_ledger()
+        if not isinstance(value, dict) or value.get("schema") != LEDGER_SCHEMA:
+            return _empty_ledger()
+        return value
+
+    def _persist_ledger(self, ledger: Mapping[str, object]) -> None:
+        self.ledger_path.write_text(
+            json.dumps(dict(ledger), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    def _load_cache(self) -> dict[str, object]:
+        if not self.cache_path.exists():
+            return _empty_cache()
+        try:
+            value = json.loads(self.cache_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return _empty_cache()
+        if not isinstance(value, dict) or value.get("schema") != CACHE_SCHEMA:
+            return _empty_cache()
+        for key in ("discovery", "full_text", "parsed"):
+            if not isinstance(value.get(key), dict):
+                value[key] = {}
+        return value
+
+    def _persist_cache(self, cache: Mapping[str, object]) -> None:
+        self.cache_path.write_text(
+            json.dumps(dict(cache), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    def _source_registry(
+        self,
+        papers: Sequence[PaperRecord],
+        full_texts: Sequence[FullTextResult],
+        parsed: Sequence[ParsedDocument],
+        user_pdfs: Sequence[str | Path],
+        issues: Sequence[CapabilityIssue],
+    ) -> tuple[SourceRecord, ...]:
+        full_text_by_id = {item.paper_id: item for item in full_texts}
+        parsed_by_id: dict[str, list[ParsedDocument]] = {}
+        for document in parsed:
+            parsed_by_id.setdefault(document.paper_id, []).append(document)
+        registry: list[SourceRecord] = []
+        for paper in papers:
+            full_text = full_text_by_id.get(paper.identifier)
+            documents = parsed_by_id.get(paper.identifier, [])
+            identity = _canonical_identity(paper.doi or paper.identifier)
+            registry.append(
+                SourceRecord(
+                    source_id=f"paper:{_stable_id(identity)}",
+                    identity=identity,
+                    title=paper.title,
+                    source_kind="DISCOVERED_METADATA",
+                    provider=paper.source or "unknown",
+                    access_basis=full_text.access_basis if full_text else "METADATA_ONLY",
+                    metadata_status="DISCOVERED",
+                    full_text_status="FOUND" if full_text else "NOT_FOUND",
+                    parser_status="PARSED" if documents else "NOT_PARSED",
+                    locators=tuple(
+                        locator for document in documents for locator in document.locators
+                    )
+                    or ((full_text.locator,) if full_text and full_text.locator else ()),
+                    priority="NORMAL",
+                    failure_reason="" if full_text else "metadata-only; full text not available",
+                )
+            )
+        for raw_path in user_pdfs:
+            path = Path(raw_path)
+            try:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                status = "REGISTERED"
+                failure_reason = ""
+            except (OSError, PermissionError) as exc:
+                digest = ""
+                status = "UNREADABLE"
+                failure_reason = str(exc)
+            identity = f"local-pdf:{digest or path.name}"
+            registry.append(
+                SourceRecord(
+                    source_id=f"user-pdf:{_stable_id(identity)}",
+                    identity=identity,
+                    title=path.name,
+                    source_kind="USER_PDF",
+                    provider="local project folder",
+                    access_basis="USER_AUTHORIZED",
+                    local_path=str(path),
+                    content_digest=digest,
+                    metadata_status=status,
+                    full_text_status="LOCAL_FILE",
+                    parser_status="PENDING_LOCAL_OR_CONSENTED_CLOUD_PARSE",
+                    priority="PREFERRED",
+                    failure_reason=failure_reason,
+                )
+            )
+        cloud_without_consent = [
+            issue.provider
+            for issue in issues
+            if issue.capability == "PDF parsing" and "consent" in issue.reason.lower()
+        ]
+        if cloud_without_consent:
+            for index, record in enumerate(registry):
+                if record.source_kind == "USER_PDF":
+                    registry[index] = replace(
+                        record,
+                        failure_reason=(
+                            record.failure_reason + "; " if record.failure_reason else ""
+                        )
+                        + "cloud parser skipped until project-level consent",
+                    )
+            for provider in cloud_without_consent:
+                registry.append(
+                    SourceRecord(
+                        source_id=f"parser:{_stable_id(provider)}",
+                        identity="cloud-parser-route",
+                        title="Project-level PDF upload authorization",
+                        source_kind="PARSER_ROUTE",
+                        provider=provider,
+                        access_basis="USER_AUTHORIZED",
+                        parser_status="SKIPPED_NO_CONSENT",
+                        priority="BLOCKED",
+                        failure_reason="cloud parser skipped until explicit project-level consent",
+                    )
+                )
+        self._write_registry(registry)
+        return tuple(registry)
+
+    def _write_registry(self, records: Sequence[SourceRecord]) -> None:
+        lines = [
+            "---",
+            "kind: research-source-registry",
+            f"schema: {REGISTRY_SCHEMA}",
+            f"updated: {self.today.isoformat()}",
+            "---",
+            "",
+            "# Research Source Registry",
+            "",
+            "Each route keeps an independent identity. Metadata-only records are discovery evidence, not source facts.",
+            "",
+            "| Source ID | Title | Identity | Kind | Provider | Local path | Access basis | Priority | Metadata | Full text | Parser | Locator(s) | Digest | Failure/recovery |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+        for record in records:
+            locators = "; ".join(record.locators) or "none"
+            failure = record.failure_reason.replace("\n", " ") or "none"
+            lines.append(
+                "| "
+                + " | ".join(
+                    (
+                        record.source_id,
+                        record.title,
+                        record.identity,
+                        record.source_kind,
+                        record.provider,
+                        record.local_path or "none",
+                        record.access_basis,
+                        record.priority,
+                        record.metadata_status,
+                        record.full_text_status,
+                        record.parser_status,
+                        locators,
+                        record.content_digest or "none",
+                        failure,
+                    )
+                )
+                + " |"
+            )
+        if not records:
+            lines.extend(("", "No source records yet; add a DOI,题录, or authorized PDF.",))
+        self.registry_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
     def _domain_context(self, domain_markdown: str) -> dict[str, str]:
         return {
@@ -455,10 +1034,25 @@ class ResearchRunner:
         terms: Sequence[str],
         domain_context: Mapping[str, str],
         adapters: Sequence[object],
-    ) -> tuple[list[PaperRecord], dict[str, int], list[CapabilityIssue]]:
+        *,
+        budget: ResearchBudget | None = None,
+        cache: dict[str, object] | None = None,
+        ledger: dict[str, object] | None = None,
+    ) -> tuple[
+        list[PaperRecord],
+        dict[str, int],
+        list[CapabilityIssue],
+        tuple[Mapping[str, object], ...],
+        str,
+    ]:
+        budget = budget or ResearchBudget()
+        cache = cache if cache is not None else _empty_cache()
+        ledger = ledger if ledger is not None else _empty_ledger()
         papers: dict[str, PaperRecord] = {}
         path_queries = {path: 0 for path, _ in SEARCH_PATHS}
         issues: list[CapabilityIssue] = []
+        coverage: list[dict[str, object]] = []
+        stopping_reason = "All configured search paths evaluated; stopping remains coverage-based rather than paper-count based."
         configured = {getattr(adapter, "name", adapter.__class__.__name__) for adapter in adapters}
         for provider in ("OpenAlex", "Semantic Scholar", "Crossref"):
             if provider not in configured:
@@ -470,6 +1064,7 @@ class ResearchRunner:
                         "Configure this adapter or use another discovery/metadata adapter.",
                     )
                 )
+        no_new_rounds = 0
         for path, description in SEARCH_PATHS:
             context = "; ".join(
                 f"{heading}: {value}"
@@ -477,10 +1072,55 @@ class ResearchRunner:
                 if value and not value.lower().startswith("open question")
             )
             query = f"{topic}; {description}; terms: {', '.join(terms)}; domain: {context}"
+            if _budget_exhausted(ledger, "query_count", budget.max_queries):
+                stopping_reason = f"Run budget stopped discovery before path '{path}' (max_queries)."
+                break
+            _ledger_increment(ledger, "query_count")
+            path_before = set(papers)
+            path_requests = 0
             for adapter in adapters:
                 name = getattr(adapter, "name", adapter.__class__.__name__)
+                cache_key = _cache_key("discovery", name, path, query)
+                cached = _cache_get(cache, "discovery", cache_key)
+                if cached is not None:
+                    found = tuple(_paper_from_cache(item) for item in cached)
+                    _ledger_increment(ledger, "cache_hits")
+                    _ledger_event(ledger, "discovery-cache-hit", path=path, provider=name)
+                else:
+                    if _budget_exhausted(ledger, "request_count", budget.max_requests):
+                        stopping_reason = (
+                            f"Run budget stopped discovery while querying path '{path}' "
+                            "(max_requests)."
+                        )
+                        break
+                    _ledger_increment(ledger, "request_count")
+                    _ledger_increment(ledger, "input_tokens", _estimate_tokens(query))
+                    path_requests += 1
+                    try:
+                        found = tuple(adapter.search(query, path))
+                        _cache_put(
+                            cache,
+                            "discovery",
+                            cache_key,
+                            [_paper_to_cache(paper) for paper in found if isinstance(paper, PaperRecord)],
+                        )
+                        _ledger_increment(
+                            ledger,
+                            "output_tokens",
+                            sum(_estimate_tokens(paper.title + " " + paper.abstract) for paper in found if isinstance(paper, PaperRecord)),
+                        )
+                    except Exception as exc:  # one provider must not stop other paths
+                        _ledger_increment(ledger, "retries")
+                        issues.append(
+                            CapabilityIssue(
+                                "discovery/metadata",
+                                name,
+                                str(exc),
+                                "Retry the provider or continue with another configured discovery adapter.",
+                            )
+                        )
+                        continue
                 try:
-                    found = adapter.search(query, path)
                     found_any = False
                     for paper in found:
                         if not isinstance(paper, PaperRecord):
@@ -501,12 +1141,73 @@ class ResearchRunner:
                             "Retry the provider or continue with another configured discovery adapter.",
                         )
                     )
+            path_new = len(set(papers) - path_before)
+            if path_new == 0:
+                no_new_rounds += 1
+            else:
+                no_new_rounds = 0
+            coverage.append(
+                {
+                    "path": path,
+                    "description": description,
+                    "query_count": 1,
+                    "request_count": path_requests,
+                    "covered": bool(path_queries[path]),
+                    "new_source_count": path_new,
+                    "marginal_gain": path_new,
+                    "consecutive_no_new_rounds": no_new_rounds,
+                }
+            )
+            if (
+                budget.max_no_new_rounds is not None
+                and no_new_rounds >= budget.max_no_new_rounds
+                and path_new <= budget.min_marginal_gain
+            ):
+                stopping_reason = (
+                    f"Adaptive stopping after {no_new_rounds} consecutive search paths without "
+                    "a new important source; uncovered paths remain listed."
+                )
+                break
         adaptive_queries = self._adaptive_queries(papers.values())
         for query in adaptive_queries:
+            if _budget_exhausted(ledger, "query_count", budget.max_queries):
+                stopping_reason = "Run budget stopped adaptive follow-up discovery (max_queries)."
+                break
+            _ledger_increment(ledger, "query_count")
             for adapter in adapters:
                 name = getattr(adapter, "name", adapter.__class__.__name__)
+                cache_key = _cache_key("discovery", name, "adaptive follow-up", query)
+                cached = _cache_get(cache, "discovery", cache_key)
+                if cached is not None:
+                    found = tuple(_paper_from_cache(item) for item in cached)
+                    _ledger_increment(ledger, "cache_hits")
+                else:
+                    if _budget_exhausted(ledger, "request_count", budget.max_requests):
+                        stopping_reason = "Run budget stopped adaptive follow-up discovery (max_requests)."
+                        break
+                    _ledger_increment(ledger, "request_count")
+                    _ledger_increment(ledger, "input_tokens", _estimate_tokens(query))
+                    try:
+                        found = tuple(adapter.search(query, "adaptive follow-up"))
+                        _cache_put(
+                            cache,
+                            "discovery",
+                            cache_key,
+                            [_paper_to_cache(paper) for paper in found if isinstance(paper, PaperRecord)],
+                        )
+                    except Exception as exc:
+                        _ledger_increment(ledger, "retries")
+                        issues.append(
+                            CapabilityIssue(
+                                "adaptive discovery",
+                                name,
+                                str(exc),
+                                "Continue from the saved candidates and retry this follow-up path later.",
+                            )
+                        )
+                        continue
                 try:
-                    for paper in adapter.search(query, "adaptive follow-up"):
+                    for paper in found:
                         if not isinstance(paper, PaperRecord):
                             raise TypeError("discovery adapter returned a non-PaperRecord")
                         classified = self._classify(paper, "adaptive follow-up")
@@ -522,7 +1223,7 @@ class ResearchRunner:
                             "Continue from the saved candidates and retry this follow-up path later.",
                         )
                     )
-        return list(papers.values()), path_queries, issues
+        return list(papers.values()), path_queries, issues, tuple(coverage), stopping_reason
 
     def _adaptive_queries(self, papers: Sequence[PaperRecord]) -> tuple[str, ...]:
         queries: set[str] = set()
@@ -564,7 +1265,16 @@ class ResearchRunner:
         papers: Sequence[PaperRecord],
         full_text_adapters: Sequence[object],
         parser_adapters: Sequence[object],
+        *,
+        config: ResearchConfig | None = None,
+        budget: ResearchBudget | None = None,
+        cache: dict[str, object] | None = None,
+        ledger: dict[str, object] | None = None,
     ) -> tuple[list[FullTextResult], list[ParsedDocument], list[CapabilityIssue]]:
+        config = config or ResearchConfig()
+        budget = budget or ResearchBudget()
+        cache = cache if cache is not None else _empty_cache()
+        ledger = ledger if ledger is not None else _empty_ledger()
         accepted_full_texts: list[FullTextResult] = []
         parsed: list[ParsedDocument] = []
         issues: list[CapabilityIssue] = []
@@ -595,8 +1305,41 @@ class ResearchRunner:
             pending_access_issue_indexes: list[int] = []
             for adapter in full_text_adapters:
                 name = getattr(adapter, "name", adapter.__class__.__name__)
+                cache_key = _cache_key("full_text", name, paper.identifier, paper.doi)
+                cached = _cache_get(cache, "full_text", cache_key)
+                if cached is not None:
+                    candidate = _full_text_from_cache(cached)
+                    _ledger_increment(ledger, "cache_hits")
+                else:
+                    if _budget_exhausted(ledger, "request_count", budget.max_requests):
+                        issues.append(
+                            CapabilityIssue(
+                                "legal full text",
+                                name,
+                                "run budget exhausted before full-text retrieval",
+                                "Resume with a larger request budget or use the saved source registry.",
+                            )
+                        )
+                        break
+                    _ledger_increment(ledger, "request_count")
+                    try:
+                        candidate = adapter.fetch(paper)
+                    except Exception as exc:
+                        _ledger_increment(ledger, "retries")
+                        issues.append(
+                            CapabilityIssue(
+                                "legal full text",
+                                name,
+                                str(exc),
+                                "Retry or use another legitimate full-text route.",
+                            )
+                        )
+                        continue
+                    if isinstance(candidate, FullTextResult):
+                        _cache_put(cache, "full_text", cache_key, _full_text_to_cache(candidate))
+                        _ledger_increment(ledger, "input_tokens", _estimate_tokens(paper.title))
+                        _ledger_increment(ledger, "output_tokens", _estimate_tokens(candidate.text))
                 try:
-                    candidate = adapter.fetch(paper)
                     if not isinstance(candidate, FullTextResult):
                         raise TypeError("full-text adapter returned a non-FullTextResult")
                     if candidate.status == "FOUND" and candidate.text:
@@ -628,6 +1371,7 @@ class ResearchRunner:
                         )
                     )
                 except Exception as exc:
+                    _ledger_increment(ledger, "retries")
                     issues.append(
                         CapabilityIssue(
                             "legal full text",
@@ -646,7 +1390,58 @@ class ResearchRunner:
                 name = getattr(adapter, "name", adapter.__class__.__name__)
                 if name == "Docling" and grobid_succeeded:
                     continue
+                if _is_cloud_parser(adapter) and not config.cloud_parser_consent:
+                    issues.append(
+                        CapabilityIssue(
+                            "PDF parsing",
+                            name,
+                            "project-level consent is required before sending a PDF to a cloud parser",
+                            "Keep the PDF local, configure a local parser, or record explicit project-level consent and rerun.",
+                        )
+                    )
+                    continue
+                cache_key = _cache_key("parsed", name, full_text.paper_id, full_text.locator)
+                cached = _cache_get(cache, "parsed", cache_key)
+                if cached is not None:
+                    document = _parsed_from_cache(cached)
+                    _ledger_increment(ledger, "cache_hits")
+                    try:
+                        if not document.locators:
+                            raise ValueError(
+                                "parser returned no page/section locators for the parsed document"
+                            )
+                        parsed.append(document)
+                        parsed_for_paper = True
+                        if name == "MinerU":
+                            mineru_succeeded = True
+                            continue
+                        if name == "GROBID":
+                            grobid_succeeded = True
+                            break
+                        if not mineru_succeeded:
+                            break
+                    except Exception as exc:
+                        issues.append(
+                            CapabilityIssue(
+                                "PDF parsing",
+                                name,
+                                str(exc),
+                                "Retry MinerU, then use GROBID or Docling; otherwise provide structured text.",
+                            )
+                        )
+                    continue
                 try:
+                    if _budget_exhausted(ledger, "parser_pages", budget.max_parser_pages):
+                        issues.append(
+                            CapabilityIssue(
+                                "PDF parsing",
+                                name,
+                                "run budget exhausted before parsing this document",
+                                "Resume with a larger parser-page budget or inspect the authorized PDF manually.",
+                            )
+                        )
+                        break
+                    _ledger_increment(ledger, "request_count")
                     document = adapter.parse(full_text)
                     if not isinstance(document, ParsedDocument):
                         raise TypeError("parser returned a non-ParsedDocument")
@@ -657,6 +1452,13 @@ class ResearchRunner:
                     if full_text.locator not in document.locators:
                         document = replace(document, locators=(full_text.locator, *document.locators))
                     parsed.append(document)
+                    _cache_put(cache, "parsed", cache_key, _parsed_to_cache(document))
+                    _ledger_increment(ledger, "parser_pages", max(1, len(document.locators)))
+                    _ledger_increment(
+                        ledger,
+                        "input_tokens",
+                        _estimate_tokens(full_text.text),
+                    )
                     parsed_for_paper = True
                     if name == "MinerU":
                         mineru_succeeded = True
@@ -667,6 +1469,7 @@ class ResearchRunner:
                     if not mineru_succeeded:
                         break
                 except Exception as exc:
+                    _ledger_increment(ledger, "retries")
                     issues.append(
                         CapabilityIssue(
                             "PDF parsing",
@@ -734,6 +1537,7 @@ class ResearchRunner:
             "# Research Evidence Package\n\n"
             "## Research question\n\n"
             "## Project domain context\n\n"
+            "## Readiness\n\n"
             "## Search paths\n\n"
             "## Terms and chemistry entities\n\n"
             "## Evidence notes\n\n"
@@ -742,6 +1546,7 @@ class ResearchRunner:
             "## Major uncertainties\n\n"
             "## Tool route\n\n"
             "## Tool degradation or HUMAN_ACTION_REQUIRED\n\n"
+            "## Coverage and stopping\n\n"
             "## Research handoff\n\n"
             "## Preserved human edits and conflicts\n\n"
             "## Human notes\n"
@@ -753,6 +1558,13 @@ class ResearchRunner:
         )
         evidence = _set_tracked_section(
             evidence, "Project domain context", domain_lines or "No domain context recorded."
+        )
+        evidence = _set_tracked_section(
+            evidence,
+            "Readiness",
+            f"Level: {values.get('readiness', 'DISCOVERY_READY')}\n"
+            f"Reason: {values.get('readiness_reason', 'Not recorded.')}\n"
+            f"Missing: {', '.join(values.get('readiness_missing', ())) or 'None recorded.'}",
         )
         paths = "\n".join(f"- {path}: {description}" for path, description in SEARCH_PATHS)
         evidence = _set_tracked_section(evidence, "Search paths", paths)
@@ -786,6 +1598,8 @@ class ResearchRunner:
         evidence = _set_tracked_section(
             evidence, "Tool degradation or HUMAN_ACTION_REQUIRED", str(values["degradation"])
         )
+        coverage_text = _coverage_text(values.get("coverage", ()), str(values.get("stopping_reason", "")))
+        evidence = _set_tracked_section(evidence, "Coverage and stopping", coverage_text)
         handoff = values["handoff"] or "No handoff proposed until a usable discovery route is available."
         evidence = _set_tracked_section(
             evidence,
@@ -819,13 +1633,32 @@ class ResearchRunner:
             ("controversy", "Controversy"),
         ):
             layer_papers = [paper for paper in values["papers"] if _layer_name(paper.layer) == layer]
+            parsed_ids = {
+                canonical_evidence_id(item.paper_id)
+                for item in values["parsed"]
+            }
             entries = _merge_lines(
                 _section_value(literature, heading),
-                "\n".join(_paper_line(paper) for paper in layer_papers),
+                "\n".join(
+                    _paper_line(
+                        paper,
+                        readiness=(
+                            "EVIDENCE_READY"
+                            if canonical_evidence_id(paper.identifier) in parsed_ids
+                            else "DISCOVERY_READY"
+                        ),
+                    )
+                    for paper in layer_papers
+                ),
                 placeholders=("No candidates recorded yet.",),
             ) or "No candidates recorded yet."
             literature = _set_tracked_section(literature, heading, entries)
         self.literature_path.write_text(literature.rstrip() + "\n", encoding="utf-8")
+        self._write_coverage_matrix(values.get("coverage", ()), str(values.get("stopping_reason", "")))
+        self._write_ledger_projection(values.get("budget_ledger", {}))
+        self.setup_wizard_path.write_text(
+            str(values.get("setup_wizard", self.setup_wizard())), encoding="utf-8"
+        )
 
     def _load_or_create(self, path: Path, metadata: Mapping[str, str], body: str) -> str:
         if not path.exists():
@@ -864,6 +1697,67 @@ class ResearchRunner:
                 f"locators: {locators}"
             )
         return "\n".join(lines)
+
+    def _write_coverage_matrix(
+        self, coverage: Sequence[Mapping[str, object]], stopping_reason: str
+    ) -> None:
+        lines = [
+            "---",
+            "kind: research-coverage-matrix",
+            "schema: 1",
+            f"updated: {self.today.isoformat()}",
+            "---",
+            "",
+            "# Research Coverage Matrix",
+            "",
+            "Coverage is a bounded research signal; paper count is not a stopping criterion.",
+            "",
+            "| Path | Covered | Queries | Requests | New sources | Marginal gain | Consecutive no-new rounds |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        ]
+        for item in coverage:
+            lines.append(
+                "| "
+                + " | ".join(
+                    (
+                        str(item.get("path", "")),
+                        "yes" if item.get("covered") else "no",
+                        str(item.get("query_count", 0)),
+                        str(item.get("request_count", 0)),
+                        str(item.get("new_source_count", 0)),
+                        str(item.get("marginal_gain", 0)),
+                        str(item.get("consecutive_no_new_rounds", 0)),
+                    )
+                )
+                + " |"
+            )
+        lines.extend(("", "## Stopping reason", stopping_reason or "Not recorded."))
+        self.coverage_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+    def _write_ledger_projection(self, ledger: Mapping[str, object]) -> None:
+        lines = [
+            "# Research Run Ledger",
+            "",
+            "The JSON run budget is the machine-readable ledger; this is its human-readable projection.",
+            "",
+        ]
+        for key in (
+            "query_count",
+            "request_count",
+            "input_tokens",
+            "output_tokens",
+            "concurrency",
+            "retries",
+            "cache_hits",
+            "parser_pages",
+            "runs_started",
+            "last_run_id",
+        ):
+            lines.append(f"- {key}: {ledger.get(key, 0)}")
+        lines.extend(("", "## Budget", "", "```json", json.dumps(ledger.get("budget", {}), ensure_ascii=False, sort_keys=True), "```"))
+        (self.project_root / "run-ledger.md").write_text(
+            "\n".join(lines).rstrip() + "\n", encoding="utf-8"
+        )
 
 
 def _preferred(adapters: Sequence[object], providers: Sequence[str]) -> tuple[object, ...]:
@@ -944,10 +1838,13 @@ def _layer_name(layer: str, *, default: str = "extension") -> str:
     return aliases.get(normalized, default)
 
 
-def _paper_line(paper: PaperRecord) -> str:
+def _paper_line(paper: PaperRecord, *, readiness: str = "DISCOVERY_READY") -> str:
     year = f", {paper.year}" if paper.year else ""
     doi = f"; DOI: {paper.doi}" if paper.doi else ""
-    return f"- {paper.identifier}: {paper.title}{year}{doi} [source: {paper.source or 'unknown'}]"
+    return (
+        f"- {paper.identifier}: {paper.title}{year}{doi} "
+        f"[source: {paper.source or 'unknown'}; readiness: {readiness}]"
+    )
 
 
 def _dedupe_issues(issues: Sequence[CapabilityIssue]) -> list[CapabilityIssue]:
@@ -1037,3 +1934,196 @@ def _asset_has_direct_edit(path: Path, titles: Sequence[str]) -> bool:
         if expected and _content_hash(_section_value(text, title)) != expected:
             return True
     return False
+
+
+def _empty_ledger() -> dict[str, object]:
+    return {
+        "schema": LEDGER_SCHEMA,
+        "query_count": 0,
+        "request_count": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "concurrency": 1,
+        "retries": 0,
+        "cache_hits": 0,
+        "parser_pages": 0,
+        "runs_started": 0,
+        "last_run_id": "",
+        "budget": {},
+        "events": [],
+    }
+
+
+def _empty_cache() -> dict[str, object]:
+    return {"schema": CACHE_SCHEMA, "discovery": {}, "full_text": {}, "parsed": {}}
+
+
+def _budget_dict(budget: ResearchBudget) -> dict[str, object]:
+    return {
+        "max_queries": budget.max_queries,
+        "max_requests": budget.max_requests,
+        "max_input_tokens": budget.max_input_tokens,
+        "max_output_tokens": budget.max_output_tokens,
+        "max_parser_pages": budget.max_parser_pages,
+        "max_retries": budget.max_retries,
+        "max_concurrency": budget.max_concurrency,
+        "max_no_new_rounds": budget.max_no_new_rounds,
+        "min_marginal_gain": budget.min_marginal_gain,
+    }
+
+
+def _ledger_increment(ledger: dict[str, object], key: str, amount: int = 1) -> None:
+    ledger[key] = int(ledger.get(key, 0)) + amount
+
+
+def _ledger_event(ledger: dict[str, object], event: str, **details: object) -> None:
+    events = ledger.setdefault("events", [])
+    if not isinstance(events, list):
+        events = []
+        ledger["events"] = events
+    events.append({"event": event, **details})
+
+
+def _budget_exhausted(ledger: Mapping[str, object], counter: str, limit: int | None) -> bool:
+    return limit is not None and int(ledger.get(counter, 0)) >= limit
+
+
+def _estimate_tokens(value: str) -> int:
+    return max(1, (len(value.strip()) + 3) // 4) if value.strip() else 0
+
+
+def _cache_key(kind: str, provider: str, identity: str, context: str = "") -> str:
+    raw = "|".join((kind, provider, identity, context))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _cache_get(cache: Mapping[str, object], kind: str, key: str) -> object | None:
+    group = cache.get(kind)
+    if not isinstance(group, Mapping):
+        return None
+    return group.get(key)
+
+
+def _cache_put(cache: dict[str, object], kind: str, key: str, value: object) -> None:
+    group = cache.setdefault(kind, {})
+    if not isinstance(group, dict):
+        group = {}
+        cache[kind] = group
+    group[key] = value
+
+
+def _paper_to_cache(paper: PaperRecord) -> dict[str, object]:
+    return {
+        "identifier": paper.identifier,
+        "title": paper.title,
+        "authors": list(paper.authors),
+        "year": paper.year,
+        "source": paper.source,
+        "layer": paper.layer,
+        "abstract": paper.abstract,
+        "doi": paper.doi,
+        "keywords": list(paper.keywords),
+        "cited_identifiers": list(paper.cited_identifiers),
+    }
+
+
+def _paper_from_cache(value: object) -> PaperRecord:
+    if not isinstance(value, Mapping):
+        raise ValueError("research cache contains an invalid paper record")
+    return PaperRecord(
+        identifier=str(value.get("identifier", "")),
+        title=str(value.get("title", "")),
+        authors=tuple(str(item) for item in value.get("authors", ()) or ()),
+        year=value.get("year") if isinstance(value.get("year"), int) else None,
+        source=str(value.get("source", "")),
+        layer=str(value.get("layer", "")),
+        abstract=str(value.get("abstract", "")),
+        doi=str(value.get("doi", "")),
+        keywords=tuple(str(item) for item in value.get("keywords", ()) or ()),
+        cited_identifiers=tuple(
+            str(item) for item in value.get("cited_identifiers", ()) or ()
+        ),
+    )
+
+
+def _full_text_to_cache(value: FullTextResult) -> dict[str, str]:
+    return {
+        "paper_id": value.paper_id,
+        "status": value.status,
+        "text": value.text,
+        "source": value.source,
+        "locator": value.locator,
+        "access_basis": value.access_basis,
+    }
+
+
+def _full_text_from_cache(value: object) -> FullTextResult:
+    if not isinstance(value, Mapping):
+        raise ValueError("research cache contains an invalid full-text record")
+    return FullTextResult(
+        paper_id=str(value.get("paper_id", "")),
+        status=str(value.get("status", "")),
+        text=str(value.get("text", "")),
+        source=str(value.get("source", "")),
+        locator=str(value.get("locator", "")),
+        access_basis=str(value.get("access_basis", "")),
+    )
+
+
+def _parsed_to_cache(value: ParsedDocument) -> dict[str, object]:
+    return {
+        "paper_id": value.paper_id,
+        "parser": value.parser,
+        "sections": list(value.sections),
+        "references": list(value.references),
+        "locators": list(value.locators),
+        "note": value.note,
+    }
+
+
+def _parsed_from_cache(value: object) -> ParsedDocument:
+    if not isinstance(value, Mapping):
+        raise ValueError("research cache contains an invalid parsed record")
+    return ParsedDocument(
+        paper_id=str(value.get("paper_id", "")),
+        parser=str(value.get("parser", "")),
+        sections=tuple(str(item) for item in value.get("sections", ()) or ()),
+        references=tuple(str(item) for item in value.get("references", ()) or ()),
+        locators=tuple(str(item) for item in value.get("locators", ()) or ()),
+        note=str(value.get("note", "")),
+    )
+
+
+def _is_cloud_parser(adapter: object) -> bool:
+    if bool(getattr(adapter, "cloud", False)):
+        return True
+    name = getattr(adapter, "name", adapter.__class__.__name__).lower()
+    return any(term in name for term in ("cloud", "remote", "upload"))
+
+
+def _canonical_identity(value: str) -> str:
+    identity = value.strip().lower()
+    identity = identity.removeprefix("https://doi.org/").removeprefix("http://doi.org/")
+    identity = identity.rstrip("/.")
+    return identity or "unknown"
+
+
+def _stable_id(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def _coverage_text(coverage: Sequence[Mapping[str, object]], stopping_reason: str) -> str:
+    if not coverage:
+        return "No search path completed yet.\n\nStopping reason: " + (stopping_reason or "Not recorded.")
+    lines = [
+        "| Path | Covered | New sources | Marginal gain | No-new rounds |",
+        "| --- | --- | ---: | ---: | ---: |",
+    ]
+    for item in coverage:
+        lines.append(
+            f"| {item.get('path', '')} | {'yes' if item.get('covered') else 'no'} | "
+            f"{item.get('new_source_count', 0)} | {item.get('marginal_gain', 0)} | "
+            f"{item.get('consecutive_no_new_rounds', 0)} |"
+        )
+    lines.extend(("", "Stopping reason: " + (stopping_reason or "Not recorded.")))
+    return "\n".join(lines)

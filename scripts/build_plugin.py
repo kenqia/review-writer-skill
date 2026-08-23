@@ -42,6 +42,21 @@ def _files(root: Path) -> dict[Path, bytes]:
     return result
 
 
+def _destination_files(root: Path) -> dict[Path, bytes]:
+    """Read an existing projection without requiring it to be complete.
+
+    A new canonical runtime file must be able to bootstrap into an older
+    projection. Completeness is checked by ``_check`` after the destination is
+    read; applying ``_files`` here would reject the very missing file that the
+    sync operation is meant to generate.
+    """
+
+    return {
+        Path(relative): path.read_bytes()
+        for relative, path in relative_files(root).items()
+    }
+
+
 def _check(source_files: dict[Path, bytes], destination_files: dict[Path, bytes]) -> list[str]:
     issues: list[str] = []
     source_paths = set(source_files)
@@ -60,7 +75,11 @@ def sync() -> None:
     source_files = _files(SOURCE)
     if not LICENSE_SOURCE.is_file():
         raise FileNotFoundError(f"project license does not exist: {LICENSE_SOURCE}")
-    destination_files = _files(DEST) if DEST.is_dir() and (DEST / "SKILL.md").is_file() else {}
+    destination_files = (
+        _destination_files(DEST)
+        if DEST.is_dir() and (DEST / "SKILL.md").is_file()
+        else {}
+    )
     DEST.mkdir(parents=True, exist_ok=True)
     for path in sorted(set(destination_files) - set(source_files)):
         (DEST / path).unlink()
@@ -76,7 +95,7 @@ def sync() -> None:
 def check() -> int:
     source_files = _files(SOURCE)
     destination_files = (
-        _files(DEST)
+        _destination_files(DEST)
         if DEST.is_dir() and (DEST / "SKILL.md").is_file()
         else {}
     )
