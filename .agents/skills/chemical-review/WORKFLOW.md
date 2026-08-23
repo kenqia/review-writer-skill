@@ -1,0 +1,57 @@
+# Chemical Review Workflow Contract
+
+## Single seam
+
+`chemical-review` 是唯一的用户可见入口，即 **the single user-facing seam**。它接收主题或研究想法，读取当前 Markdown 状态，决定下一阶段，调用对应能力，并写回状态和研究资产。阶段内部可以调用其他 skill 或外部工具，但它们不成为第二个用户入口或第二个状态权威。
+
+项目根目录由本次运行明确指定；三个资产直接保存在该目录。随 skill 提供的
+`orchestrator.py` 是一个无数据库的最小文件编排器，用于验证启动、Grill 更新、冷启动恢复和确认边界；它不代替后续 Research 或写作能力。
+
+## Inputs
+
+最小输入是一个化学综述主题或研究想法。研究者可以随后补充目标读者/期刊、授权 PDF、已有文献、工具配置和自然语言反馈；缺少这些信息时，orchestrator 先追问或给出候选，不把空白静默当作确定答案。
+
+## State contract
+
+`workflow-state.md` 使用人类可读的 Markdown frontmatter 保存：
+
+- `phase`：当前阶段；格式枚举以 [ASSET-TEMPLATES.md](ASSET-TEMPLATES.md) 为唯一来源，语义按本文件解释。
+- `status`：`ACTIVE`、`WAITING_FOR_HUMAN`、`READY_FOR_NEXT_PHASE` 或 `CANDIDATE_READY`。
+- `next_action`：下一次运行要做的一件可执行的事。
+- `intent_revision`：综述意图的递增修订号。
+- `intent_confirmation`：`NOT_REQUIRED`、`REQUIRED` 或 `CONFIRMED`。
+- `human_action`：`NONE` 或 `REQUIRED`；对外报告 `HUMAN_ACTION_REQUIRED` 时设为 `REQUIRED`。
+- `updated`：最近一次写入日期。
+
+正文保留一小段人类可读摘要：当前目标、最近完成的工作、未决问题、工具降级影响和恢复提示。
+
+## Phase transitions
+
+1. 没有状态的主题进入 `GRILL`。
+2. `GRILL` 只有在研究问题、范围、预期贡献和排除项足够明确，且没有未解决的核心意图决定时，才可建议进入 `RESEARCH`。
+3. 首次综述必须经过 `RESEARCH`。后续循环可以依据 Research 交接判断或 Review 反馈继续 Research、进入 `PROTOTYPE` 或恢复到更早阶段。
+4. `PROTOTYPE` 通过后才建议进入 `PRD`；若只有摘要复述或问题没有非平凡综合价值，回到 `GRILL` 或 `RESEARCH`。
+5. `PRD` 形成蓝图后进入 `ISSUES`，`ISSUES` 形成有依赖关系的研究/写作单元后进入 `IMPLEMENT`。
+6. `IMPLEMENT` 更新单一综述内容源后进入 `REVIEW`。
+7. `REVIEW` 产生干净稿、研究者版和下一轮建议；反馈按最早失效阶段回退，不默认从头重做。
+8. 缺少用户动作、授权来源或关键决定时使用 `WAITING_FOR_HUMAN`，并在 `next_action` 写出恢复动作；对外状态和交接报告使用 `HUMAN_ACTION_REQUIRED` 作为明确的用户动作标记。
+9. 研究者确认候选包可以继续人工终审时使用 `CANDIDATE_READY`；这不是科学有效性或期刊接收状态。
+
+## Intent confirmation
+
+当模型建议改变研究问题、核心论点方向、范围、排除项、目标读者或目标期刊时，the change requires **explicit confirmation**：
+
+1. 保留原意图和 `intent_revision`；
+2. 以自然语言说明变更、理由、受影响资产和替代选项；
+3. 将 `intent_confirmation` 设为 `REQUIRED`；
+4. 在研究者明确接受前，不重写下游蓝图、单元或正文。
+
+研究者确认后才递增 `intent_revision`，设为 `CONFIRMED`，并从最早受影响的阶段继续。
+
+## Ownership and recovery
+
+- orchestrator 负责写入 `workflow-state.md`、`review-intent.md`、`domain-profile.md`，并负责跨单元合并。
+- 人类可以直接修改这些 Markdown；下一次运行必须把差异作为人类输入，不能静默抹平。
+- 每个并行单元先写自己的研究资产或变更建议；只有 orchestrator 能把已接受的结果并入单一综述内容源。
+- 工具失败、解析不完整、来源受限和等待用户动作都必须保留在状态摘要中，以便冷启动恢复。
+- 不创建数据库、隐藏状态服务、Web 看板或另一份“真相”。

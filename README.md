@@ -14,3 +14,12 @@ This repository contains project-scoped, editable copies of the stable engineeri
 - Domain documentation: single-context, configured by `docs/agents/domain.md`
 
 Product requirements and chemistry domain terminology have not yet been defined. They will be developed through the installed specification and domain-modeling workflow.
+
+## Chemical review skill
+
+The first product slice is the user-invoked `chemical-review` skill. It starts from a chemistry review topic, persists a human-readable intent/domain/workflow state, and routes later Research, Prototype, PRD, Issues, Implement, and Review phases through one orchestrator seam.
+
+- Entrypoint: `.agents/skills/chemical-review/SKILL.md`
+- Workflow contract: `.agents/skills/chemical-review/WORKFLOW.md`
+- State templates: `.agents/skills/chemical-review/ASSET-TEMPLATES.md`
+- Minimal file orchestrator: `.agents/skills/chemical-review/orchestrator.py`

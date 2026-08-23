@@ -1,0 +1,495 @@
+"""Small, file-backed orchestrator for the chemical-review skill.
+
+The module deliberately owns only the three Markdown assets named by the skill
+contract.  It does not discover papers or write review prose; later phases own
+those capabilities.  Keeping this seam executable makes the start/resume and
+human-confirmation boundaries testable without introducing a service or a
+second state store.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+import re
+from typing import Mapping
+
+
+PHASES = ("GRILL", "RESEARCH", "PROTOTYPE", "PRD", "ISSUES", "IMPLEMENT", "REVIEW")
+STATUSES = ("ACTIVE", "WAITING_FOR_HUMAN", "READY_FOR_NEXT_PHASE", "CANDIDATE_READY")
+
+_INTENT_HEADINGS = {
+    "research_question": "Research question",
+    "core_claim_candidates": "Core-claim candidates",
+    "scope": "Scope and exclusions",
+    "audience": "Audience or target journal",
+    "expected_contribution": "Expected contribution",
+}
+_DOMAIN_HEADINGS = {
+    "chemical_subfield": "Chemical subfield",
+    "core_systems": "Core systems",
+    "terms": "Canonical terms and synonyms",
+    "boundary_scenarios": "Boundary scenarios",
+    "evidence_expectations": "Evidence expectations",
+    "known_capability_limits": "Known capability limits",
+}
+_ALIASES = {
+    "question": "research_question",
+    "research_question": "research_question",
+    "core_claim": "core_claim_candidates",
+    "core_claims": "core_claim_candidates",
+    "core_claim_candidates": "core_claim_candidates",
+    "scope": "scope",
+    "scope_and_exclusions": "scope",
+    "exclusions": "exclusions",
+    "audience": "audience",
+    "journal": "audience",
+    "audience_or_target_journal": "audience",
+    "contribution": "expected_contribution",
+    "expected_contribution": "expected_contribution",
+    "chemical_subfield": "chemical_subfield",
+    "core_systems": "core_systems",
+    "terms": "terms",
+    "canonical_terms": "terms",
+    "boundary_scenarios": "boundary_scenarios",
+    "evidence_expectations": "evidence_expectations",
+    "known_capability_limits": "known_capability_limits",
+}
+
+
+@dataclass(frozen=True)
+class WorkflowResult:
+    """The user-visible projection returned by one orchestrator invocation."""
+
+    phase: str
+    status: str
+    next_action: str
+    intent_confirmation: str
+    human_action: str
+    intent_revision: int
+    assets: Mapping[str, str]
+
+
+class ChemicalReviewOrchestrator:
+    """Persist and resume the lightweight chemical-review workflow."""
+
+    def __init__(self, project_root: str | Path, *, today: date | None = None) -> None:
+        self.project_root = Path(project_root)
+        self.project_root.mkdir(parents=True, exist_ok=True)
+        self.today = today or date.today()
+
+    @property
+    def state_path(self) -> Path:
+        return self.project_root / "workflow-state.md"
+
+    @property
+    def intent_path(self) -> Path:
+        return self.project_root / "review-intent.md"
+
+    @property
+    def domain_path(self) -> Path:
+        return self.project_root / "domain-profile.md"
+
+    def start(self, topic: str) -> WorkflowResult:
+        """Start from a topic, or resume if this project already has state."""
+
+        if self.state_path.exists():
+            return self.resume()
+        topic = topic.strip()
+        if not topic:
+            raise ValueError("A chemistry review topic or research idea is required.")
+
+        self._write_initial_assets(topic)
+        return self.resume()
+
+    def resume(self) -> WorkflowResult:
+        """Reload the Markdown state after a cold restart."""
+
+        if not self.state_path.exists():
+            raise FileNotFoundError(f"No workflow state at {self.state_path}")
+        for path in (self.intent_path, self.domain_path):
+            if not path.exists():
+                raise FileNotFoundError(f"Workflow state exists but asset is missing: {path}")
+        metadata, _ = _split_frontmatter(self.state_path.read_text(encoding="utf-8"))
+        intent_metadata, _ = _split_frontmatter(self.intent_path.read_text(encoding="utf-8"))
+        domain_metadata, _ = _split_frontmatter(self.domain_path.read_text(encoding="utf-8"))
+        if intent_metadata.get("kind") != "review-intent":
+            raise ValueError("review-intent.md has the wrong asset kind")
+        if domain_metadata.get("kind") != "domain-profile":
+            raise ValueError("domain-profile.md has the wrong asset kind")
+        missing = {key for key in ("phase", "status", "next_action") if not metadata.get(key)}
+        if missing:
+            raise ValueError(f"Malformed workflow state; missing: {', '.join(sorted(missing))}")
+        phase = metadata["phase"]
+        status = metadata["status"]
+        if phase not in PHASES:
+            raise ValueError(f"Unknown workflow phase: {phase}")
+        if status not in STATUSES:
+            raise ValueError(f"Unknown workflow status: {status}")
+        return WorkflowResult(
+            phase=phase,
+            status=status,
+            next_action=metadata["next_action"],
+            intent_confirmation=metadata.get("intent_confirmation", "NOT_REQUIRED"),
+            human_action=metadata.get("human_action", "NONE"),
+            intent_revision=int(metadata.get("intent_revision", "0")),
+            assets=metadata,
+        )
+
+    def continue_grill(self, answers: Mapping[str, str]) -> WorkflowResult:
+        """Apply ordinary-language Grill answers without guessing omissions."""
+
+        self._require_state("GRILL")
+        intent = self.intent_path.read_text(encoding="utf-8")
+        domain = self.domain_path.read_text(encoding="utf-8")
+        normalized = self._normalize_answers(answers)
+        intent = self._apply_intent_answers(intent, normalized)
+        domain = self._apply_domain_answers(domain, normalized)
+        missing = self._missing_intent_fields(intent)
+        open_questions = "None recorded." if not missing else "\n".join(f"- {item}" for item in missing)
+        intent = _set_section(intent, "Open questions", open_questions)
+        self._write(self.intent_path, intent)
+        self._write(self.domain_path, domain)
+
+        if missing:
+            self._update_state(
+                status="ACTIVE",
+                next_action="continue Grill by answering the open questions in review-intent.md.",
+                intent_confirmation="REQUIRED",
+                human_action="NONE",
+                open_questions=open_questions,
+                resume_note="The project remains in Grill until the core intent is clear.",
+            )
+        else:
+            self._update_state(
+                status="READY_FOR_NEXT_PHASE",
+                next_action="Confirm the Grill contract before starting Research.",
+                intent_confirmation="REQUIRED",
+                human_action="NONE",
+                open_questions="None recorded.",
+                resume_note="All required Grill fields are present; human confirmation is still required.",
+            )
+        return self.resume()
+
+    def confirm_current_intent(self) -> WorkflowResult:
+        """Confirm the current Grill contract and hand off to Research."""
+
+        state = self._require_state("GRILL")
+        if state.get("status") != "READY_FOR_NEXT_PHASE":
+            raise ValueError("The Grill contract is incomplete; answer its open questions first.")
+        intent = self.intent_path.read_text(encoding="utf-8")
+        intent = _replace_frontmatter(intent, {"confirmation": "CONFIRMED"})
+        self._write(self.intent_path, intent)
+        self._update_state(
+            phase="RESEARCH",
+            status="ACTIVE",
+            next_action="Build the research evidence packet from the confirmed intent.",
+            intent_confirmation="CONFIRMED",
+            human_action="NONE",
+            resume_note="Research is the first downstream phase after the confirmed Grill contract.",
+        )
+        return self.resume()
+
+    def propose_intent_change(
+        self, changes: Mapping[str, str], *, earliest_phase: str = "GRILL"
+    ) -> WorkflowResult:
+        """Hold a core-intent change for explicit human confirmation."""
+
+        self._require_state()
+        if earliest_phase not in PHASES:
+            raise ValueError(f"Unknown workflow phase: {earliest_phase}")
+        normalized = self._normalize_answers(changes)
+        proposals = {
+            key: value
+            for key, value in normalized.items()
+            if (key in _INTENT_HEADINGS or key == "exclusions") and value.strip()
+        }
+        if not proposals:
+            raise ValueError("At least one core-intent change is required.")
+        proposal_body = "\n".join(
+            f"- {key}: {value}" for key, value in proposals.items()
+        )
+        intent = self.intent_path.read_text(encoding="utf-8")
+        intent = _set_section(intent, "Pending intent change", proposal_body)
+        self._write(self.intent_path, intent)
+        self._update_state(
+            status="WAITING_FOR_HUMAN",
+            next_action="Confirm or reject the pending intent change in ordinary language.",
+            intent_confirmation="REQUIRED",
+            human_action="REQUIRED",
+            resume_note=f"The proposal affects {earliest_phase}; downstream assets remain unchanged.",
+            pending_earliest_phase=earliest_phase,
+        )
+        return self.resume()
+
+    def confirm_intent_change(self, *, accept: bool) -> WorkflowResult:
+        """Accept or reject a pending intent change without losing its history."""
+
+        state = self._require_state()
+        if state.get("intent_confirmation") != "REQUIRED":
+            raise ValueError("There is no pending intent change to confirm.")
+        intent = self.intent_path.read_text(encoding="utf-8")
+        pending = _section_value(intent, "Pending intent change")
+        proposals = _parse_bullets(pending)
+        if not proposals:
+            raise ValueError("The pending intent change is empty or malformed.")
+        earliest_phase = state.get("pending_earliest_phase", "GRILL")
+        if accept:
+            revision = int(state.get("intent_revision", "0"))
+            history = "\n".join(
+                f"- Revision {revision} before change: {key} = "
+                f"{_section_value(intent, _INTENT_HEADINGS.get(key, 'Scope and exclusions'))}"
+                for key in proposals
+            )
+            intent = _set_section(intent, "Intent revision history", history)
+            intent = self._apply_intent_answers(intent, proposals)
+            intent = _remove_section(intent, "Pending intent change")
+            intent = _replace_frontmatter(intent, {"intent_revision": str(revision + 1), "confirmation": "CONFIRMED"})
+            self._write(self.intent_path, intent)
+            self._update_state(
+                phase=earliest_phase,
+                status="ACTIVE",
+                next_action=f"Revisit {earliest_phase} with the confirmed intent change.",
+                intent_revision=str(revision + 1),
+                intent_confirmation="CONFIRMED",
+                human_action="NONE",
+                resume_note="The accepted change is routed to the earliest affected phase.",
+                pending_earliest_phase=None,
+            )
+        else:
+            intent = _remove_section(intent, "Pending intent change")
+            self._write(self.intent_path, intent)
+            self._update_state(
+                status="ACTIVE",
+                next_action=f"Continue {state.get('phase', 'GRILL')} from the saved state.",
+                intent_confirmation="CONFIRMED",
+                human_action="NONE",
+                resume_note="The proposed change was rejected; the prior intent remains authoritative.",
+                pending_earliest_phase=None,
+            )
+        return self.resume()
+
+    def _write_initial_assets(self, topic: str) -> None:
+        intent = _document(
+            {
+                "kind": "review-intent",
+                "schema": "1",
+                "intent_revision": "0",
+                "confirmation": "REQUIRED",
+            },
+            "# Review Intent\n\n"
+            f"## Research question\n{topic}\n\n"
+            "## Core-claim candidates\nOpen question: propose one or more non-trivial claims.\n\n"
+            "## Scope and exclusions\nScope: Open question: define the included chemistry.\n"
+            "Exclusions: Open question: define what is out of scope.\n\n"
+            "## Audience or target journal\nOpen question: identify the intended reader or journal.\n\n"
+            "## Expected contribution\nOpen question: explain why this review matters now.\n\n"
+            "## Open questions\n- Core claim\n- Scope and exclusions\n- Audience or target journal\n- Expected contribution\n",
+        )
+        domain = _document(
+            {"kind": "domain-profile", "schema": "1"},
+            "# Project Domain Profile\n\n"
+            "## Chemical subfield\nOpen question: identify the relevant chemical subfield.\n\n"
+            "## Core systems\nOpen question: identify the molecules, reactions, materials, devices, or analytical objects.\n\n"
+            "## Canonical terms and synonyms\n"
+            f"Initial topic: {topic}\n\n"
+            "## Boundary scenarios\nOpen question: identify edge cases that affect scope or comparability.\n\n"
+            "## Evidence expectations\nOpen question: decide which source types and experimental details are required.\n\n"
+            "## Known capability limits\nRecord tool or source limits as they are discovered.\n",
+        )
+        state = _document(
+            {
+                "kind": "chemical-review-workflow-state",
+                "schema": "1",
+                "phase": "GRILL",
+                "status": "ACTIVE",
+                "next_action": "Answer the Grill research question, core-claim, scope/exclusions, audience/journal, and contribution prompts.",
+                "intent_revision": "0",
+                "intent_confirmation": "REQUIRED",
+                "human_action": "NONE",
+                "updated": self.today.isoformat(),
+            },
+            "# Workflow State\n\n"
+            "## Current goal\nClarify the review intent before literature research.\n\n"
+            "## Recently completed\nCreated the initial topic-only project assets.\n\n"
+            "## Open questions and risks\nThe Grill prompts are intentionally unresolved.\n\n"
+            "## Tool degradation or HUMAN_ACTION_REQUIRED\nNone.\n\n"
+            "## Resume note\nThe next invocation continues Grill from these Markdown assets.\n",
+        )
+        self._write(self.intent_path, intent)
+        self._write(self.domain_path, domain)
+        self._write(self.state_path, state)
+
+    def _normalize_answers(self, answers: Mapping[str, str]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        for raw_key, raw_value in answers.items():
+            key = _ALIASES.get(raw_key.strip().lower())
+            if key is None or not isinstance(raw_value, str) or not raw_value.strip():
+                continue
+            normalized[key] = raw_value.strip()
+        return normalized
+
+    def _apply_intent_answers(self, intent: str, answers: Mapping[str, str]) -> str:
+        for key, heading in _INTENT_HEADINGS.items():
+            if key in answers:
+                if key == "scope":
+                    current = _section_value(intent, heading)
+                    exclusions = _labeled_value(current, "Exclusions") or "Open question: define what is out of scope."
+                    intent = _set_section(intent, heading, f"Scope: {answers[key]}\nExclusions: {exclusions}")
+                else:
+                    intent = _set_section(intent, heading, answers[key])
+        if "exclusions" in answers:
+            current = _section_value(intent, "Scope and exclusions")
+            scope = _labeled_value(current, "Scope") or "Open question: define the included chemistry."
+            intent = _set_section(intent, "Scope and exclusions", f"Scope: {scope}\nExclusions: {answers['exclusions']}")
+        return intent
+
+    def _apply_domain_answers(self, domain: str, answers: Mapping[str, str]) -> str:
+        for key, heading in _DOMAIN_HEADINGS.items():
+            if key in answers:
+                domain = _set_section(domain, heading, answers[key])
+        return domain
+
+    def _missing_intent_fields(self, intent: str) -> list[str]:
+        missing: list[str] = []
+        if _is_open(_section_value(intent, "Core-claim candidates")):
+            missing.append("Core-claim candidates")
+        scope = _section_value(intent, "Scope and exclusions")
+        if _is_open(_labeled_value(scope, "Scope")):
+            missing.append("Scope")
+        if _is_open(_labeled_value(scope, "Exclusions")):
+            missing.append("Exclusions")
+        if _is_open(_section_value(intent, "Audience or target journal")):
+            missing.append("Audience or target journal")
+        if _is_open(_section_value(intent, "Expected contribution")):
+            missing.append("Expected contribution")
+        return missing
+
+    def _require_state(self, phase: str | None = None) -> dict[str, str]:
+        if not self.state_path.exists():
+            raise FileNotFoundError(f"No workflow state at {self.state_path}")
+        metadata, _ = _split_frontmatter(self.state_path.read_text(encoding="utf-8"))
+        if phase and metadata.get("phase") != phase:
+            raise ValueError(f"This action requires phase {phase}, found {metadata.get('phase')}")
+        return metadata
+
+    def _update_state(self, **updates: str | None) -> None:
+        metadata, body = _split_frontmatter(self.state_path.read_text(encoding="utf-8"))
+        for key, value in updates.items():
+            if key in {"open_questions", "resume_note"}:
+                continue
+            if value is None:
+                metadata.pop(key, None)
+            else:
+                metadata[key] = value
+        metadata["updated"] = self.today.isoformat()
+        open_questions = updates.get("open_questions")
+        if open_questions is None:
+            open_questions = _section_value(body, "Open questions and risks")
+        resume_note = updates.get("resume_note")
+        if resume_note is None:
+            resume_note = _section_value(body, "Resume note")
+        body = _set_section(body, "Open questions and risks", open_questions)
+        body = _set_section(body, "Resume note", resume_note)
+        self._write(self.state_path, _document(metadata, body))
+
+    def _write(self, path: Path, content: str) -> None:
+        path.write_text(content.rstrip() + "\n", encoding="utf-8")
+
+
+def _document(metadata: Mapping[str, str], body: str) -> str:
+    frontmatter = "---\n" + "\n".join(
+        f"{key}: {_encode_frontmatter_value(value)}"
+        for key, value in metadata.items()
+    ) + "\n---\n\n"
+    return frontmatter + body.lstrip()
+
+
+def _encode_frontmatter_value(value: object) -> str:
+    """Keep scalar frontmatter on one line; body sections carry paragraphs."""
+
+    return str(value).replace("\\", "\\\\").replace("\n", "\\n")
+
+
+def _split_frontmatter(text: str) -> tuple[dict[str, str], str]:
+    if not text.startswith("---\n"):
+        raise ValueError("Markdown asset must begin with frontmatter.")
+    end = text.find("\n---", 4)
+    if end < 0:
+        raise ValueError("Markdown asset has unterminated frontmatter.")
+    raw = text[4:end]
+    metadata: dict[str, str] = {}
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        key, separator, value = line.partition(":")
+        if not separator:
+            raise ValueError(f"Malformed frontmatter line: {line}")
+        metadata[key.strip()] = value.strip().replace("\\n", "\n").replace("\\\\", "\\")
+    return metadata, text[end + len("\n---") :].lstrip("\n")
+
+
+def _replace_frontmatter(text: str, updates: Mapping[str, str]) -> str:
+    metadata, body = _split_frontmatter(text)
+    metadata.update(updates)
+    return _document(metadata, body)
+
+
+def _section_pattern(title: str) -> re.Pattern[str]:
+    return re.compile(rf"^## {re.escape(title)}\n(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+
+
+def _section_value(text: str, title: str) -> str:
+    body = _split_frontmatter(text)[1] if text.startswith("---\n") else text
+    match = _section_pattern(title).search(body)
+    if not match:
+        return ""
+    value = re.sub(r"<!--.*?-->", "", match.group(1), flags=re.DOTALL).strip()
+    return value
+
+
+def _set_section(text: str, title: str, value: str) -> str:
+    has_frontmatter = text.startswith("---\n")
+    if has_frontmatter:
+        metadata, body = _split_frontmatter(text)
+    else:
+        metadata, body = {}, text
+    replacement = f"## {title}\n{value.strip()}\n\n"
+    pattern = _section_pattern(title)
+    if pattern.search(body):
+        body = pattern.sub(lambda _: replacement, body, count=1)
+    else:
+        body = body.rstrip() + "\n\n" + replacement
+    return _document(metadata, body) if has_frontmatter else body.lstrip()
+
+
+def _remove_section(text: str, title: str) -> str:
+    has_frontmatter = text.startswith("---\n")
+    if has_frontmatter:
+        metadata, body = _split_frontmatter(text)
+    else:
+        metadata, body = {}, text
+    body = _section_pattern(title).sub("", body, count=1)
+    return _document(metadata, body) if has_frontmatter else body.lstrip()
+
+
+def _labeled_value(value: str, label: str) -> str:
+    match = re.search(rf"(?:^|\n){re.escape(label)}:\s*(.*?)(?=\n[A-Z][^:\n]+:|\Z)", value, re.DOTALL)
+    return match.group(1).strip() if match else ""
+
+
+def _is_open(value: str) -> bool:
+    normalized = value.strip().lower()
+    return not normalized or normalized.startswith("open question") or normalized.startswith("<")
+
+
+def _parse_bullets(value: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for line in value.splitlines():
+        if not line.lstrip().startswith("-"):
+            continue
+        key, separator, item = line.lstrip()[1:].partition(":")
+        if separator and (key.strip() in _INTENT_HEADINGS or key.strip() == "exclusions"):
+            parsed[key.strip()] = item.strip()
+    return parsed

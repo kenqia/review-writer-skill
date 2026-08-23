@@ -1,0 +1,91 @@
+# Chemical Review Asset Templates
+
+这些模板是研究者可读的 Markdown 起点。实际项目可以增加内容，但不要删除它们承载的意图、领域和恢复信息。
+
+## `review-intent.md`
+
+```md
+---
+kind: review-intent
+schema: 1
+intent_revision: 0
+confirmation: REQUIRED
+---
+
+# Review Intent
+
+## Research question
+<!-- 当前综述要回答的化学问题；未知时写 open question。 -->
+
+## Core-claim candidates
+<!-- 模型和研究者考虑中的核心论点，不要求现在选定唯一答案。 -->
+
+## Scope and exclusions
+<!-- 包含什么、明确不包含什么、时间/体系/方法边界。 -->
+
+## Audience or target journal
+<!-- 目标读者或期刊；未确定时保留候选。 -->
+
+## Expected contribution
+<!-- 为什么现在需要这篇综述，它可能改变什么理解或研究决策。 -->
+
+## Open questions
+<!-- 需要 Grill 继续追问或由研究者决定的事项。 -->
+```
+
+## `domain-profile.md`
+
+```md
+---
+kind: domain-profile
+schema: 1
+---
+
+# Project Domain Profile
+
+## Chemical subfield
+<!-- 有机、无机、分析、物化、材料、药化或交叉领域。 -->
+
+## Core systems
+<!-- 分子、反应、材料、器件、分析对象或其他核心体系。 -->
+
+## Canonical terms and synonyms
+<!-- 当前项目采用的术语、同义词、缩写和避免混淆的词。 -->
+
+## Boundary scenarios
+<!-- 会改变范围或比较是否成立的边缘场景。 -->
+
+## Evidence expectations
+<!-- 本项目对原始论文、综述、标准、数据库和实验细节的适用要求。 -->
+
+## Known capability limits
+<!-- 当前模型、工具或来源的已知限制；不把限制伪装成事实。 -->
+```
+
+## `workflow-state.md`
+
+```md
+---
+kind: chemical-review-workflow-state
+schema: 1
+phase: GRILL | RESEARCH | PROTOTYPE | PRD | ISSUES | IMPLEMENT | REVIEW
+status: ACTIVE | WAITING_FOR_HUMAN | READY_FOR_NEXT_PHASE | CANDIDATE_READY
+next_action: <one concrete action>
+intent_revision: 0
+intent_confirmation: NOT_REQUIRED | REQUIRED | CONFIRMED
+human_action: NONE | REQUIRED
+updated: YYYY-MM-DD
+---
+
+# Workflow State
+
+## Current goal
+
+## Recently completed
+
+## Open questions and risks
+
+## Tool degradation or HUMAN_ACTION_REQUIRED
+
+## Resume note
+```
