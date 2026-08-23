@@ -417,6 +417,10 @@ class ChemicalReviewOrchestrator:
             f"## Guide content\n{snapshot.content}\n",
         )
         self._write(self.project_root / "journal-guide.md", guide)
+        from delivery import JournalProfile
+
+        profile = JournalProfile.from_guide_snapshot(self.project_root)
+        profile.persist(self.project_root)
         self._update_state(
             journal_guide_status="FETCHED",
             journal_guide_locator=snapshot.source_locator,
@@ -760,6 +764,130 @@ class ChemicalReviewOrchestrator:
 
     execute_continuous = run_continuous
 
+    def run_continuous_cycle(
+        self,
+        *,
+        research_config=None,
+        prototype_submission=None,
+        blueprint_proposal=None,
+        units=(),
+        unit_results=(),
+        review_assessment=None,
+        journal_adaptation=None,
+    ) -> WorkflowResult:
+        """Advance every supplied, non-blocked phase in one continuous cycle.
+
+        Continuous mode removes ordinary acceptance prompts, but it cannot
+        invent a missing scientific input.  Optional phase payloads are used
+        once when their phase is active; a missing payload returns the saved
+        state and its actionable ``next_action``.  Hard blockers and human
+        review remain visible and resumable.
+        """
+
+        if self._execution_mode() != "continuous":
+            raise ValueError("run_continuous_cycle requires a continuous project.")
+        if research_config is not None:
+            from research import ResearchConfig
+
+            if not isinstance(research_config, ResearchConfig):
+                raise TypeError("research_config must be a ResearchConfig")
+        from prototype import BlueprintProposal, PrototypeSubmission
+        from review import ReviewAssessment
+        from units import ResearchWritingUnit, UnitResult
+
+        if prototype_submission is not None and not isinstance(
+            prototype_submission, PrototypeSubmission
+        ):
+            raise TypeError("prototype_submission must be a PrototypeSubmission")
+        if blueprint_proposal is not None and not isinstance(
+            blueprint_proposal, BlueprintProposal
+        ):
+            raise TypeError("blueprint_proposal must be a BlueprintProposal")
+        unit_values = tuple(units)
+        result_values = tuple(unit_results)
+        if not all(isinstance(unit, ResearchWritingUnit) for unit in unit_values):
+            raise TypeError("units must contain only ResearchWritingUnit values")
+        if not all(isinstance(result, UnitResult) for result in result_values):
+            raise TypeError("unit_results must contain only UnitResult values")
+        if review_assessment is not None and not isinstance(review_assessment, ReviewAssessment):
+            raise TypeError("review_assessment must be a ReviewAssessment")
+
+        ran_research = False
+        ran_prototype = False
+        built_blueprint = False
+        created_units = False
+        submitted_results = False
+        for _ in range(16):
+            state = self.resume()
+            if state.phase == "RESEARCH":
+                if (
+                    state.status == "ACTIVE"
+                    and research_config is not None
+                    and not ran_research
+                ):
+                    ran_research = True
+                    self.run_research(research_config)
+                    continue
+                if state.status == "READY_FOR_NEXT_PHASE":
+                    self.accept_research_handoff()
+                    continue
+                return state
+            if state.phase == "PROTOTYPE":
+                if (
+                    state.status == "ACTIVE"
+                    and prototype_submission is not None
+                    and not ran_prototype
+                ):
+                    ran_prototype = True
+                    self.run_prototype(prototype_submission)
+                    continue
+                if state.status == "READY_FOR_NEXT_PHASE":
+                    self.accept_prototype_handoff()
+                    continue
+                return state
+            if state.phase == "PRD":
+                if (
+                    state.status == "ACTIVE"
+                    and blueprint_proposal is not None
+                    and not built_blueprint
+                ):
+                    built_blueprint = True
+                    self.build_review_blueprint(blueprint_proposal)
+                    continue
+                if state.status == "READY_FOR_NEXT_PHASE":
+                    self.accept_review_blueprint()
+                    continue
+                return state
+            if state.phase == "ISSUES":
+                if (
+                    state.status == "ACTIVE"
+                    and unit_values
+                    and not created_units
+                ):
+                    created_units = True
+                    self.create_review_units(unit_values)
+                    continue
+                if state.status == "READY_FOR_NEXT_PHASE":
+                    self.accept_unit_plan()
+                    continue
+                return state
+            if state.phase == "IMPLEMENT":
+                if (
+                    state.status == "ACTIVE"
+                    and result_values
+                    and not submitted_results
+                ):
+                    submitted_results = True
+                    self.submit_ready_unit_results(result_values)
+                    continue
+                if state.status == "READY_FOR_NEXT_PHASE" and review_assessment is not None:
+                    return self.run_review(review_assessment, journal_adaptation)
+                return state
+            return state
+        raise RuntimeError("Continuous cycle exceeded its phase-transition safety bound.")
+
+    advance_continuous = run_continuous_cycle
+
     def export_docx(self, output_path=None, *, profile=None):
         """Export the canonical Markdown draft through the single project seam.
 
@@ -768,9 +896,18 @@ class ChemicalReviewOrchestrator:
         local so the core orchestrator stays usable in keyless/minimal setups.
         """
 
-        from delivery import deliver_project
+        from delivery import GenericChemistryDocxExporter, JournalProfile
 
-        return deliver_project(self, output_path=output_path, profile=profile)
+        if profile is None:
+            profile_path = self.project_root / "journal-profile.md"
+            profile = (
+                JournalProfile.reconcile(self.project_root)
+                if profile_path.exists()
+                else JournalProfile.unselected()
+            )
+        return GenericChemistryDocxExporter(self.project_root).export(
+            output_path, profile=profile
+        )
 
     def retry_review_unit(self, unit_id: str) -> WorkflowResult:
         """Resume one blocked unit after its missing capability or input is addressed."""
@@ -1322,17 +1459,10 @@ class ChemicalReviewOrchestrator:
 
         entries: list[tuple[str, str]] = []
         if materials is None:
-            candidate_paths = (
-                self.project_root / name
-                for name in (
-                    "proposal.md",
-                    "search-log.md",
-                    "pdf-manifest.md",
-                    "research-notes.md",
-                    "project-context.md",
-                )
-            )
-            materials = tuple(path for path in candidate_paths if path.exists())
+            # A topic-only start must not rummage through project files.  The
+            # caller has to explicitly provide proposal/search-log/PDF-manifest
+            # material, keeping private history and logs outside the read set.
+            materials = ()
         if isinstance(materials, Mapping):
             iterable = materials.items()
         else:

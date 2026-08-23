@@ -211,13 +211,12 @@ class ReviewRunner:
             raise FileExistsError(
                 "Review outputs already exist and will not be overwritten: " + ", ".join(existing)
             )
-        included_assets = self._validate_candidate_assets(journal)
-
         content = content_path.read_text(encoding="utf-8")
         content_metadata, _ = _split_frontmatter(content)
         if content_metadata.get("kind") != "single-review-content-source":
             raise ValueError("review-content.md has the wrong asset kind.")
         blocks = _parse_content_blocks(content)
+        included_assets = self._validate_candidate_assets(journal, blocks)
         content_revision = int(content_metadata.get("content_revision", "0"))
         source_digest = _source_digest(blocks, content_revision)
         value_types = tuple(
@@ -308,7 +307,11 @@ class ReviewRunner:
             content_revision=content_revision,
         )
 
-    def _validate_candidate_assets(self, journal: JournalAdaptation | None) -> tuple[str, ...]:
+    def _validate_candidate_assets(
+        self,
+        journal: JournalAdaptation | None,
+        blocks: Sequence[_ContentBlock],
+    ) -> tuple[str, ...]:
         intent_text = (self.project_root / "review-intent.md").read_text(encoding="utf-8")
         intent_target = _intent_target_journal(intent_text)
         if intent_target and journal is None:
@@ -336,6 +339,58 @@ class ReviewRunner:
                     f"{name} has the wrong asset kind; expected {expected_kind}."
                 )
             assets.append(name)
+        figure_path = self.project_root / "figure-inventory.md"
+        if figure_path.exists():
+            from delivery import FigureInventory
+
+            figures = FigureInventory.load(self.project_root).validate_for_delivery()
+            section_counts: dict[str, int] = {}
+            evidence_ids = {
+                evidence_id for block in blocks for evidence_id in block.evidence_ids
+            }
+            evidence_identity_keys = {
+                key
+                for evidence_id in evidence_ids
+                for key in _source_identity_keys(evidence_id)
+            }
+            for block in blocks:
+                section_counts[block.section] = section_counts.get(block.section, 0) + 1
+            for figure in figures:
+                if figure.target_section not in section_counts:
+                    raise ValueError(
+                        f"Figure {figure.asset_id} targets an absent content section."
+                    )
+                expected_paragraphs = {
+                    f"P-{index}" for index in range(1, section_counts[figure.target_section] + 1)
+                }
+                if figure.target_paragraph not in expected_paragraphs:
+                    raise ValueError(
+                        f"Figure {figure.asset_id} targets an absent content paragraph."
+                    )
+                if not any(
+                    _source_identity_keys(citation) & evidence_identity_keys
+                    for citation in figure.citation_ids
+                ):
+                    raise ValueError(
+                        f"Figure {figure.asset_id} is not bound to a cited content source."
+                    )
+            registry_path = self.project_root / "source-registry.md"
+            if not registry_path.exists():
+                raise FileNotFoundError(
+                    "Figure delivery requires source-registry.md for source identity binding."
+                )
+            registry = _source_registry_bindings(
+                registry_path.read_text(encoding="utf-8")
+            )
+            for figure in figures:
+                if not any(
+                    _source_identity_keys(figure.source_id)
+                    & (_source_identity_keys(record["source_id"]) | _source_identity_keys(record["identity"]))
+                    for record in registry
+                ):
+                    raise ValueError(
+                        f"Figure {figure.asset_id} source identity is absent from source-registry.md."
+                    )
         optional_delivery_assets = {
             "source-registry.md": "research-source-registry",
             "coverage-matrix.md": "research-coverage-matrix",
@@ -755,3 +810,52 @@ def _intent_target_journal(intent: str) -> str:
 
 def _nonblank(values: Sequence[str]) -> tuple[str, ...]:
     return tuple(value.strip() for value in values if value.strip())
+
+
+def _source_registry_bindings(text: str) -> tuple[dict[str, str], ...]:
+    """Parse the small source-registry table without accepting substring matches."""
+
+    lines = text.splitlines()
+    header_line = next((line for line in lines if line.startswith("| Source ID |")), "")
+    if not header_line:
+        return ()
+    headers = tuple(part.strip() for part in header_line.strip("|").split("|"))
+    try:
+        source_id_index = headers.index("Source ID")
+        identity_index = headers.index("Identity")
+    except ValueError:
+        return ()
+    values: list[dict[str, str]] = []
+    for line in lines:
+        if not line.startswith("|") or line == header_line:
+            continue
+        if set(line.replace("|", "").strip()) <= {"-"}:
+            continue
+        cells = tuple(part.strip() for part in line.strip("|").split("|"))
+        if len(cells) != len(headers):
+            continue
+        values.append(
+            {
+                "source_id": cells[source_id_index],
+                "identity": cells[identity_index],
+            }
+        )
+    return tuple(values)
+
+
+def _source_identity_keys(value: str) -> set[str]:
+    """Return exact comparable keys for source IDs and DOI/URL identities."""
+
+    raw = value.strip().strip("<>[]{}\"'").lower()
+    if not raw:
+        return set()
+    keys = {raw}
+    if raw.startswith("doi:"):
+        keys.add("doi:" + raw[4:].rstrip(".,;)").strip())
+    parsed = urlparse(raw)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        host = parsed.netloc.split(":", 1)[0]
+        path = parsed.path.lstrip("/").rstrip(".,;)")
+        if host in {"doi.org", "dx.doi.org", "www.doi.org"} and path:
+            keys.add("doi:" + path)
+    return keys

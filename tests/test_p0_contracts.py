@@ -127,6 +127,29 @@ class P0ContractTests(unittest.TestCase):
                 "MERGED",
             )
 
+    def test_cross_study_claim_requires_explicit_chemistry_comparability(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._implementation_project(
+                project_dir,
+                units=(self._unit("cross-study"),),
+            )
+            literature = Path(project_dir, "literature-set.md")
+            literature.write_text(
+                literature.read_text(encoding="utf-8")
+                + "\n## Extension\n- paper-2: Second evidence [readiness: EVIDENCE_READY]\n",
+                encoding="utf-8",
+            )
+            orchestrator.submit_review_unit_result(
+                self._result(
+                    "cross-study",
+                    claim_level="MODEL_SYNTHESIS",
+                    evidence_ids=("paper-1", "paper-2"),
+                )
+            )
+
+            merged = orchestrator.merge_review_units(("cross-study",))
+            self.assertEqual(merged.assets["readiness"], "EVIDENCE_READY")
+
     def test_execution_mode_persists_and_continuous_batch_merges_once(self):
         with TemporaryDirectory() as project_dir:
             orchestrator = self._implementation_project(

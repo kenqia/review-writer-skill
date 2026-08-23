@@ -20,7 +20,6 @@ from delivery import (  # noqa: E402
     FigureAsset,
     FigureInventory,
     JournalProfile,
-    deliver_project,
 )
 from orchestrator import ChemicalReviewOrchestrator, _document, _split_frontmatter  # noqa: E402
 
@@ -66,7 +65,13 @@ class FigureDocxDeliveryTests(unittest.TestCase):
                 claim="claim-1",
                 citation="paper-1",
             )
-            inventory.place(table.asset_id, section="Mechanistic comparison")
+            inventory.place(
+                table.asset_id,
+                section="Mechanistic comparison",
+                paragraph="P-1",
+                claim="claim-1",
+                citation="paper-1",
+            )
             path = inventory.persist()
 
             loaded = FigureInventory.load(root)
@@ -115,6 +120,9 @@ class FigureDocxDeliveryTests(unittest.TestCase):
                     provenance="Transcribed from the cited paper.",
                     table_rows=(("Entry", "Yield"), ("A", "84%")),
                     target_section="Results",
+                    target_paragraph="P-1",
+                    claim_ids=("claim-1",),
+                    citation_ids=("paper-1",),
                 )
             )
             inventory.persist()
@@ -147,32 +155,6 @@ class FigureDocxDeliveryTests(unittest.TestCase):
             self.assertIn("reference_count: 1", manifest)
             self.assertIn("layout_status: MET", manifest)
             self.assertIn("## Export QA", manifest)
-
-    def test_delivery_wrapper_is_the_thin_project_seam(self):
-        with TemporaryDirectory() as project_dir:
-            root = Path(project_dir)
-            root.joinpath("review-content.md").write_text(
-                _document(
-                    {
-                        "kind": "single-review-content-source",
-                        "schema": "1",
-                        "content_revision": "1",
-                    },
-                    "# Review Content Source\n\n"
-                    "## Content blocks\n\n"
-                    "### Merge 1 · Block\n"
-                    "Section: Background\n"
-                    "Claim level: SOURCE_FACT\n"
-                    "Contribution type: term_verification\n"
-                    "Source units: unit-1\n"
-                    "Evidence IDs: paper-1\n"
-                    "Text:\nA source fact.\n",
-                ),
-                encoding="utf-8",
-            )
-            result = deliver_project(root)
-            self.assertEqual(result.status, "EXPORTED")
-            self.assertTrue(result.output_path.is_file())
 
     def test_orchestrator_exposes_the_delivery_seam(self):
         with TemporaryDirectory() as project_dir:
@@ -218,7 +200,13 @@ class FigureDocxDeliveryTests(unittest.TestCase):
                     provenance="Original figure from the cited paper.",
                 )
             )
-            inventory.place("fig-1", section="Mechanistic comparison", paragraph="P-2")
+            inventory.place(
+                "fig-1",
+                section="Mechanistic comparison",
+                paragraph="P-2",
+                claim="claim-1",
+                citation="https://doi.org/10.1000/example",
+            )
             path = inventory.persist()
 
             text = path.read_text(encoding="utf-8")
@@ -245,6 +233,36 @@ class FigureDocxDeliveryTests(unittest.TestCase):
                     )
                 )
 
+    def test_source_registration_rejects_transformed_provenance_and_hash_mismatch(self):
+        with TemporaryDirectory() as project_dir:
+            root = Path(project_dir)
+            image_path = root / "source.png"
+            Image.new("RGB", (32, 24), "white").save(image_path)
+            inventory = FigureInventory(root)
+            with self.assertRaisesRegex(ValueError, "AI-generated"):
+                inventory.register_source_figure(
+                    FigureAsset(
+                        asset_id="ai-pretender",
+                        source_id="paper-1",
+                        source_path=image_path.name,
+                        locator="p. 1, Figure 1",
+                        caption="Pretended source.",
+                        provenance="AI-generated composite based on the source.",
+                    )
+                )
+            with self.assertRaisesRegex(ValueError, "hash"):
+                inventory.register_source_figure(
+                    FigureAsset(
+                        asset_id="hash-mismatch",
+                        source_id="paper-1",
+                        source_path=image_path.name,
+                        locator="p. 1, Figure 1",
+                        caption="Mismatched source.",
+                        provenance="Cropped from the cited paper.",
+                        sha256="0" * 64,
+                    )
+                )
+
     def test_generic_docx_rebuilds_from_canonical_content_with_source_figure(self):
         with TemporaryDirectory() as project_dir:
             root = Path(project_dir)
@@ -260,6 +278,9 @@ class FigureDocxDeliveryTests(unittest.TestCase):
                     caption="Mechanistic source figure.",
                     provenance="Original source figure.",
                     target_section="Mechanistic comparison",
+                    target_paragraph="P-1",
+                    claim_ids=("claim-1",),
+                    citation_ids=("paper-1",),
                 )
             )
             inventory.persist()

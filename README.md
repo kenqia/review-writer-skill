@@ -88,10 +88,13 @@ Research 默认只有真实的 OpenAlex discovery adapter；其他路线通过�
 MinerU/GROBID/Docling。缺少 API、配额受限或全文受限时，流程必须保留降级信息，必要时请求
 用户提供 DOI、题录、合法全文或授权 PDF；摘要、排名、解析器输出和模型推断都不能伪装成文献事实。
 
-Research 的 `DISCOVERY_READY → EVIDENCE_READY → CLAIM_READY` 是资格门，不是论文数量评分。默认
-`continuous` 模式会批量推进可执行单元，只在硬阻塞或 `HUMAN_ACTION_REQUIRED` 暂停；需要逐阶段
-人工验收时可持久化 `acceptance` 模式。无 key 时生成可执行 `research-setup-wizard.md` 并保留
+Research 的 `DISCOVERY_READY → EVIDENCE_READY → CLAIM_READY` 是资格门，不是论文数量评分。项目可
+选择 `continuous` 模式批量推进可执行单元，也可选择 `acceptance` 在阶段边界验收；两者只在硬阻塞或 `HUMAN_ACTION_REQUIRED` 暂停/停顿。无 key 时生成可执行 `research-setup-wizard.md` 并保留
 `NO_KEY_FALLBACK`，不会自动修改 shell/auth/.env，也不会把用户 PDF 上传到云端 parser。
+
+当 agent 已准备好各阶段 payload 时，continuous 项目可通过唯一 orchestrator seam 的
+`run_continuous_cycle(...)` 自动跨过普通 handoff 和 Issues/Implement 边界；缺少授权、能力配置、科学
+判断或其他硬阻塞时仍返回可恢复的 `next_action`，不会伪造输入或跳过证据门。
 
 图表在 Research/Implement 阶段登记到 `figure-inventory.md`：Figure、Scheme、Table 都要有来源
 identity、page/section/bbox locator、hash、resolution、extraction status 和正文放置绑定。当前

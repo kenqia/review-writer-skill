@@ -199,6 +199,11 @@ class ProductUseAcceptanceTests(unittest.TestCase):
                                 contribution_type="comparison",
                                 text="The selected studies report different favored pathways.",
                                 evidence_ids=("paper-1", "paper-2"),
+                                comparability_status="COMPARABLE",
+                                comparability_basis=(
+                                    "Compared the reported reaction context, endpoint, and mechanistic probe; "
+                                    "unreported conditions remain explicit uncertainty."
+                                ),
                             ),
                         ),
                         remaining_uncertainty="Operando speciation remains incomplete.",
@@ -220,6 +225,9 @@ class ProductUseAcceptanceTests(unittest.TestCase):
                     caption="Source mechanism figure.",
                     provenance="Cropped from the authorized source paper.",
                     target_section="Mechanistic comparison",
+                    target_paragraph="P-1",
+                    claim_ids=("mechanism-claim",),
+                    citation_ids=("paper-1",),
                 )
             )
             inventory.persist()

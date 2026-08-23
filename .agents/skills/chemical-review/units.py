@@ -20,6 +20,7 @@ from orchestrator import (
 
 
 CLAIM_LEVELS = {"SOURCE_FACT", "MODEL_SYNTHESIS", "MODEL_HYPOTHESIS"}
+COMPARABILITY_STATUSES = {"COMPARABLE", "NOT_COMPARABLE", "GAP", "NOT_APPLICABLE"}
 CONTRIBUTION_TYPES = {
     "term_verification",
     "retrieval",
@@ -60,6 +61,8 @@ class ClaimBlock:
     contribution_type: str
     text: str
     evidence_ids: tuple[str, ...] = ()
+    comparability_status: str = "NOT_APPLICABLE"
+    comparability_basis: str = ""
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,8 @@ class MergeResolution:
     contribution_type: str
     evidence_ids: tuple[str, ...]
     rationale: str
+    comparability_status: str = "NOT_APPLICABLE"
+    comparability_basis: str = ""
 
 
 @dataclass(frozen=True)
@@ -366,6 +371,8 @@ class UnitManager:
                     evidence_ids=tuple(
                         _canonical_evidence_id(item) for item in resolution.evidence_ids
                     ),
+                    comparability_status=resolution.comparability_status,
+                    comparability_basis=resolution.comparability_basis,
                 )
                 _validate_claim(claim, available_evidence=self._available_evidence_records())
                 merged_blocks.append((source_units, claim))
@@ -409,7 +416,11 @@ class UnitManager:
             all_units_merged=all(value == "MERGED" for value in statuses.values()),
             content_revision=revision,
             human_edit_detected=human_edit_detected,
-            readiness="CLAIM_READY" if merged_blocks else self._current_readiness(),
+            readiness=(
+                "CLAIM_READY"
+                if merged_blocks and all(_claim_is_ready(claim) for _, claim in merged_blocks)
+                else self._best_preclaim_readiness(merged_blocks)
+            ),
             content_digest=self._content_digest(),
         )
 
@@ -720,6 +731,8 @@ class UnitManager:
                 contribution_type=_field(block, "Contribution type"),
                 text=text_match.group(1).strip(),
                 evidence_ids=tuple(item.strip() for item in evidence.split(",") if item.strip()),
+                comparability_status=_field(block, "Comparability status") or "NOT_APPLICABLE",
+                comparability_basis=_field(block, "Comparability basis"),
             )
             claim = _normalize_claim(claim)
             _validate_claim(claim, available_evidence=self._available_evidence_records())
@@ -806,6 +819,23 @@ class UnitManager:
             return False
         content = self.content_path.read_text(encoding="utf-8")
         return f"Merge key: {merge_key}" in _section_value(content, "Merge history")
+
+    def _best_preclaim_readiness(
+        self, blocks: Sequence[tuple[tuple[str, ...], ClaimBlock]]
+    ) -> str:
+        records = self._available_evidence_records()
+        evidence_ids = {
+            evidence_id
+            for _, claim in blocks
+            for evidence_id in claim.evidence_ids
+        }
+        if evidence_ids and all(
+            records.get(evidence_id, records.get(_canonical_evidence_id(evidence_id)))
+            in {"EVIDENCE_READY", "CLAIM_READY"}
+            for evidence_id in evidence_ids
+        ):
+            return "EVIDENCE_READY"
+        return self._current_readiness()
 
     def _recorded_merged_unit_ids(self) -> set[str]:
         if not self.content_path.exists():
@@ -912,6 +942,8 @@ def _validate_claim(
         raise ValueError("Unknown claim level: " + claim.claim_level)
     if claim.contribution_type not in CONTRIBUTION_TYPES:
         raise ValueError("Unknown contribution type: " + claim.contribution_type)
+    if claim.comparability_status not in COMPARABILITY_STATUSES:
+        raise ValueError("Unknown comparability status: " + claim.comparability_status)
     if not claim.section.strip() or "\n" in claim.section or not claim.text.strip():
         raise ValueError("Claim blocks require a one-line section and non-empty text.")
     evidence_ids = _nonblank(claim.evidence_ids)
@@ -954,6 +986,24 @@ def _validate_claim(
             )
 
 
+def _claim_is_ready(claim: ClaimBlock) -> bool:
+    """Require an explicit chemistry-comparability decision for cross-study claims."""
+
+    cross_study = len(_nonblank(claim.evidence_ids)) > 1 and claim.contribution_type in {
+        "comparison",
+        "explanation",
+        "rebuttal",
+        "trend",
+        "hypothesis",
+    }
+    if not cross_study:
+        return True
+    return (
+        claim.comparability_status == "COMPARABLE"
+        and bool(claim.comparability_basis.strip())
+    )
+
+
 def _normalize_claim(claim: ClaimBlock) -> ClaimBlock:
     return replace(
         claim,
@@ -977,6 +1027,8 @@ def _render_result(result: UnitResult) -> str:
         f"Claim level: {claim.claim_level}\n"
         f"Contribution type: {claim.contribution_type}\n"
         f"Evidence IDs: {', '.join(_nonblank(claim.evidence_ids)) or 'NONE'}\n"
+        f"Comparability status: {claim.comparability_status}\n"
+        f"Comparability basis: {claim.comparability_basis.strip() or 'Not recorded.'}\n"
         f"Text:\n{claim.text.strip()}"
         for index, claim in enumerate(result.claims, start=1)
     )
@@ -1001,6 +1053,8 @@ def _render_content_blocks(
         f"Contribution type: {claim.contribution_type}\n"
         f"Source units: {', '.join(source_units)}\n"
         f"Evidence IDs: {', '.join(_nonblank(claim.evidence_ids)) or 'NONE'}\n"
+        f"Comparability status: {claim.comparability_status}\n"
+        f"Comparability basis: {claim.comparability_basis.strip() or 'Not recorded.'}\n"
         f"Text:\n{claim.text.strip()}"
         for index, (source_units, claim) in enumerate(blocks, start=1)
     ) or "No content blocks added in this merge."
@@ -1037,6 +1091,8 @@ def _merge_key(
                 "claim_level=" + claim.claim_level,
                 "contribution_type=" + claim.contribution_type,
                 "evidence_ids=" + ",".join(_nonblank(claim.evidence_ids)),
+                "comparability_status=" + claim.comparability_status,
+                "comparability_basis=" + claim.comparability_basis.strip(),
                 "text=" + claim.text.strip(),
             )
         )

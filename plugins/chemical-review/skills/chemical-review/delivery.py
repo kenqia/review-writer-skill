@@ -333,11 +333,17 @@ class FigureInventory:
             )
         if asset.extraction_status not in EXTRACTION_STATUSES:
             raise ValueError(f"Unknown extraction status: {asset.extraction_status}")
+        if _forbidden_source_provenance(asset.provenance):
+            raise ValueError(
+                "A SOURCE asset cannot claim AI-generated, composite, or redrawn provenance."
+            )
 
         if asset.asset_type == "TABLE":
             if not asset.table_rows:
                 raise ValueError("A source table requires at least one table row.")
             table_digest = _table_digest(asset.table_rows)
+            if asset.sha256 and asset.sha256 != table_digest:
+                raise ValueError(f"Table {asset.asset_id} source hash does not match its rows.")
             registered = replace(
                 asset,
                 sha256=asset.sha256 or table_digest,
@@ -356,9 +362,12 @@ class FigureInventory:
                 raise RuntimeError("Figure inventory requires Pillow for image metadata.")
             with Image.open(source_path) as image:
                 resolution = f"{image.width}x{image.height}"
+            source_digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
+            if asset.sha256 and asset.sha256 != source_digest:
+                raise ValueError(f"Figure {asset.asset_id} source hash does not match its file.")
             registered = replace(
                 asset,
-                sha256=hashlib.sha256(source_path.read_bytes()).hexdigest(),
+                sha256=source_digest,
                 resolution=resolution,
                 extraction_status=asset.extraction_status
                 if asset.extraction_status != "UNKNOWN"
@@ -487,10 +496,15 @@ class FigureInventory:
                     asset.resolution,
                     asset.provenance,
                     asset.target_section,
+                    asset.target_paragraph,
                 )
             ):
                 raise ValueError(
                     f"Figure {asset.asset_id} is missing provenance, locator, or placement."
+                )
+            if not asset.claim_ids or not asset.citation_ids:
+                raise ValueError(
+                    f"Figure {asset.asset_id} requires claim and citation placement bindings."
                 )
             if asset.asset_type not in ASSET_TYPES:
                 raise ValueError(f"Asset {asset.asset_id} has an unknown type: {asset.asset_type}")
@@ -656,10 +670,13 @@ class GenericChemistryDocxExporter:
         document.core_properties.modified = datetime(2000, 1, 1, tzinfo=timezone.utc)
         document.add_heading(document.core_properties.title, level=0)
 
-        figures_by_section: dict[str, list[FigureAsset]] = {}
+        figures_by_paragraph: dict[tuple[str, str], list[FigureAsset]] = {}
         for asset in figures:
-            figures_by_section.setdefault(asset.target_section, []).append(asset)
+            figures_by_paragraph.setdefault(
+                (asset.target_section, asset.target_paragraph), []
+            ).append(asset)
         seen_sections: set[str] = set()
+        paragraph_counts: dict[str, int] = {}
         evidence_ids: list[str] = []
         for block in blocks:
             if block.section not in seen_sections:
@@ -667,7 +684,9 @@ class GenericChemistryDocxExporter:
                 seen_sections.add(block.section)
             document.add_paragraph(block.text)
             evidence_ids.extend(block.evidence_ids)
-            pending = figures_by_section.pop(block.section, [])
+            paragraph_counts[block.section] = paragraph_counts.get(block.section, 0) + 1
+            paragraph_id = f"P-{paragraph_counts[block.section]}"
+            pending = figures_by_paragraph.pop((block.section, paragraph_id), [])
             for asset in pending:
                 if asset.asset_type == "TABLE":
                     column_count = max(len(row) for row in asset.table_rows)
@@ -681,14 +700,23 @@ class GenericChemistryDocxExporter:
                     path = Path(asset.source_path)
                     if not path.is_absolute():
                         path = self.project_root / path
-                    document.add_picture(str(path), width=Inches(5.5))
+                    picture = _cropped_picture(path, asset.bbox)
+                    document.add_picture(picture, width=Inches(5.5))
                 caption = document.add_paragraph(f"{asset.asset_id}. {asset.caption}")
                 if caption.runs:
                     caption.runs[0].italic = True
                 document.add_paragraph(f"Source: {asset.source_id}; {asset.locator}")
-        if figures_by_section:
-            missing = ", ".join(sorted(asset.asset_id for assets in figures_by_section.values() for asset in assets))
-            raise ValueError(f"Assets are placed in sections absent from canonical content: {missing}")
+        if figures_by_paragraph:
+            missing = ", ".join(
+                sorted(
+                    asset.asset_id
+                    for assets in figures_by_paragraph.values()
+                    for asset in assets
+                )
+            )
+            raise ValueError(
+                f"Assets are placed at paragraphs absent from canonical content: {missing}"
+            )
         if evidence_ids:
             document.add_heading("References", level=1)
             for identifier in dict.fromkeys(evidence_ids):
@@ -706,23 +734,6 @@ class GenericChemistryDocxExporter:
             for requirement in profile.requirements:
                 document.add_paragraph(requirement, style="List Bullet")
         return document
-
-
-def deliver_project(
-    project_root: str | Path | object,
-    *,
-    output_path: str | Path | None = None,
-    profile: JournalProfile | None = None,
-) -> DocxExportResult:
-    """Thin delivery adapter for the existing project/orchestrator seam.
-
-    Callers may pass the project root or an existing orchestrator instance;
-    this adapter owns no workflow state and never creates a second content
-    source. The canonical ``review-content.md`` remains the only input.
-    """
-
-    root = getattr(project_root, "project_root", project_root)
-    return GenericChemistryDocxExporter(root).export(output_path, profile=profile)
 
 
 def _export_qa(blocks, assets: tuple[FigureAsset, ...], profile: JournalProfile) -> dict[str, object]:
@@ -817,6 +828,44 @@ def _append_unique(values: tuple[str, ...], value: str) -> tuple[str, ...]:
 def _table_digest(rows: tuple[tuple[str, ...], ...]) -> str:
     canonical = "\n".join("\t".join(cell.strip() for cell in row) for row in rows)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _forbidden_source_provenance(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+    return bool(
+        re.search(
+            r"(?:\bai generated\b|\bgenerated by\b|\bsynthetic\b|\bcomposite\b|\bredrawn?\b)",
+            normalized,
+        )
+    )
+
+
+def _cropped_picture(path: Path, bbox: tuple[int, int, int, int] | str):
+    values = _bbox_values(bbox)
+    if values is None:
+        return str(path)
+    if Image is None:
+        raise DocxExportError("Figure cropping requires Pillow.")
+    with Image.open(path) as source:
+        left, top, right, bottom = values
+        if not (0 <= left < right <= source.width and 0 <= top < bottom <= source.height):
+            raise ValueError(f"Figure crop is outside the source image: {path.name}")
+        cropped = source.crop(values)
+        stream = BytesIO()
+        cropped.save(stream, format="PNG")
+    stream.seek(0)
+    return stream
+
+
+def _bbox_values(value: tuple[int, int, int, int] | str) -> tuple[int, int, int, int] | None:
+    if isinstance(value, tuple):
+        return value
+    if not value.strip():
+        return None
+    parts = tuple(part.strip() for part in value.split(","))
+    if len(parts) != 4 or not all(part.isdigit() for part in parts):
+        raise ValueError("Figure BBox must contain four non-negative integers.")
+    return tuple(int(part) for part in parts)  # type: ignore[return-value]
 
 
 def _deterministic_docx(document) -> bytes:

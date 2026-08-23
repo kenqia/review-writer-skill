@@ -376,6 +376,8 @@ class UnitImplementationTests(unittest.TestCase):
                             contribution_type="comparison",
                             text="The selected studies report different favored pathways.",
                             evidence_ids=("paper-1", "paper-2"),
+                            comparability_status="COMPARABLE",
+                            comparability_basis="Compared ligand, substrate, units, and reported endpoints.",
                         ),
                         ClaimBlock(
                             section="Mechanistic comparison",
@@ -383,6 +385,8 @@ class UnitImplementationTests(unittest.TestCase):
                             contribution_type="rebuttal",
                             text="The evidence does not support a context-free universal pathway.",
                             evidence_ids=("paper-1", "paper-2"),
+                            comparability_status="COMPARABLE",
+                            comparability_basis="Compared ligand, substrate, units, and reported endpoints.",
                         ),
                         ClaimBlock(
                             section="Research agenda",
@@ -390,6 +394,8 @@ class UnitImplementationTests(unittest.TestCase):
                             contribution_type="hypothesis",
                             text="A ligand-dependent resting-state switch may determine branching.",
                             evidence_ids=("paper-1", "paper-2"),
+                            comparability_status="COMPARABLE",
+                            comparability_basis="Compared ligand, substrate, units, and reported endpoints.",
                         ),
                     ),
                     remaining_uncertainty="Operando speciation is not yet available.",

@@ -11,6 +11,11 @@
 `HUMAN_ACTION_REQUIRED` 停下；`acceptance` 在阶段/批次边界暂停，适合人工验收。两种模式共用同一
 证据门和单一 Markdown 状态，不把“少停顿”当成降低来源要求。
 
+对已准备好的阶段，可通过 orchestrator 的 `run_continuous_cycle(...)` 一次提交 Research、Prototype、
+PRD、Issues、Implement 和 Review 所需的 agent payload。它会自动接受普通 handoff 和 unit-plan 边界；
+缺少科学输入、授权、能力配置或遇到 `WAITING_FOR_HUMAN` 时立即返回保存的 `next_action`，不会猜测或
+重复已完成工作。`acceptance` 项目继续使用逐阶段入口，以保留显式人工验收。
+
 ## Inputs
 
 最小输入是一个化学综述主题或研究想法。研究者可以随后补充目标读者/期刊、授权 PDF、已有文献、工具配置和自然语言反馈；缺少目标读者和期刊时，orchestrator 提议一到三个期刊候选，研究者确认后才读取其当前官方作者指南，不把空白静默当作确定答案。

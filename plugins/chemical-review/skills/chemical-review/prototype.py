@@ -50,6 +50,17 @@ class PrototypeSubmission:
 
 
 @dataclass(frozen=True)
+class AssetPlacement:
+    """PRD placement for one inventoried visual evidence asset."""
+
+    asset_id: str
+    section: str
+    paragraph: str
+    claim_ids: tuple[str, ...]
+    citation_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class BlueprintProposal:
     """Agent-produced executable outline derived from saved project assets."""
 
@@ -60,6 +71,7 @@ class BlueprintProposal:
     target_journal_requirements: tuple[str, ...]
     known_risks: tuple[str, ...]
     candidate_units: tuple[str, ...]
+    asset_placements: tuple[AssetPlacement, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -337,6 +349,8 @@ class BlueprintBuilder:
             f"{_items(proposal.known_risks)}\n\n"
             "## Candidate research/writing units\n"
             f"{_items(proposal.candidate_units)}\n\n"
+            "## Figure/Scheme/Table placement plan\n"
+            f"{_render_asset_placements(proposal.asset_placements)}\n\n"
             "## Revision history\n"
             "No revisions yet.\n\n"
             "## Human notes\n"
@@ -344,6 +358,35 @@ class BlueprintBuilder:
         document = _document(metadata, body)
         document = _record_generated_hashes(document, self.CHANGEABLE_SECTIONS.values())
         self.blueprint_path.write_text(document.rstrip() + "\n", encoding="utf-8")
+        if proposal.asset_placements:
+            from delivery import FigureInventory
+
+            inventory = FigureInventory.load(self.project_root)
+            for placement in proposal.asset_placements:
+                if placement.asset_id not in inventory.assets:
+                    raise ValueError(
+                        f"Blueprint placement references an unknown asset: {placement.asset_id}"
+                    )
+                inventory.place(
+                    placement.asset_id,
+                    section=placement.section,
+                    paragraph=placement.paragraph,
+                )
+                for claim_id in placement.claim_ids:
+                    inventory.place(
+                        placement.asset_id,
+                        section=placement.section,
+                        paragraph=placement.paragraph,
+                        claim=claim_id,
+                    )
+                for citation_id in placement.citation_ids:
+                    inventory.place(
+                        placement.asset_id,
+                        section=placement.section,
+                        paragraph=placement.paragraph,
+                        citation=citation_id,
+                    )
+            inventory.persist()
         return 0
 
     def revise(self, changes: Mapping[str, str | tuple[str, ...]], *, evidence_note: str) -> int:
@@ -411,10 +454,33 @@ class BlueprintBuilder:
             missing.append("narrative_line")
         if missing:
             raise ValueError("Blueprint proposal is missing: " + ", ".join(missing))
+        for placement in proposal.asset_placements:
+            if not all(
+                (
+                    placement.asset_id.strip(),
+                    placement.section.strip(),
+                    placement.paragraph.strip(),
+                    _nonblank(placement.claim_ids),
+                    _nonblank(placement.citation_ids),
+                )
+            ):
+                raise ValueError(
+                    "Asset placements require asset, section, paragraph, claim, and citation bindings."
+                )
+            if placement.section not in proposal.section_structure:
+                raise ValueError("Asset placement targets a section absent from the blueprint.")
 
 
 def _items(values: tuple[str, ...]) -> str:
     return "\n".join(f"- {value}" for value in values if value.strip()) or "- None recorded."
+
+
+def _render_asset_placements(values: tuple[AssetPlacement, ...]) -> str:
+    return "\n".join(
+        f"- {item.asset_id}: {item.section} / {item.paragraph}; "
+        f"claims: {', '.join(item.claim_ids)}; citations: {', '.join(item.citation_ids)}"
+        for item in values
+    ) or "- None recorded."
 
 
 def _nonblank(values: tuple[str, ...]) -> tuple[str, ...]:
