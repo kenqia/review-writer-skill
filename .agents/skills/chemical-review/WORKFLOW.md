@@ -30,12 +30,27 @@
 1. 没有状态的主题进入 `GRILL`。
 2. `GRILL` 只有在研究问题、范围、预期贡献和排除项足够明确，且没有未解决的核心意图决定时，才可建议进入 `RESEARCH`。
 3. 首次综述必须经过 `RESEARCH`。后续循环可以依据 Research 交接判断或 Review 反馈继续 Research、进入 `PROTOTYPE` 或恢复到更早阶段。
-4. `PROTOTYPE` 通过后才建议进入 `PRD`；若只有摘要复述或问题没有非平凡综合价值，回到 `GRILL` 或 `RESEARCH`。
+4. Research 发现较高的问题边界、比较或价值风险时先进入 `PROTOTYPE`；风险较低且研究者接受 Research 的直接交接理由时可以进入 `PRD`。Prototype 若只有摘要复述或问题没有非平凡综合价值，回到 `GRILL` 或 `RESEARCH`。
 5. `PRD` 形成蓝图后进入 `ISSUES`，`ISSUES` 形成有依赖关系的研究/写作单元后进入 `IMPLEMENT`。
 6. `IMPLEMENT` 更新单一综述内容源后进入 `REVIEW`。
 7. `REVIEW` 产生干净稿、研究者版和下一轮建议；反馈按最早失效阶段回退，不默认从头重做。
 8. 缺少用户动作、授权来源或关键决定时使用 `WAITING_FOR_HUMAN`，并在 `next_action` 写出恢复动作；对外状态和交接报告使用 `HUMAN_ACTION_REQUIRED` 作为明确的用户动作标记。
 9. 研究者确认候选包可以继续人工终审时使用 `CANDIDATE_READY`；这不是科学有效性或期刊接收状态。
+
+## Research execution contract
+
+Research 使用随入口提供的可替换 adapter seam。默认能力路线按“发现/元数据 → 化学实体/术语 → 合法全文 → PDF 解析”记录 OpenAlex、Semantic Scholar、Crossref、PubChem、ChEBI、Unpaywall/Europe PMC/CORE、MinerU/GROBID/Docling；配置文件或 adapter 名称只是能力选择，不是科学权威。具体公开职责和降级路线见 [docs/research/chemical-review-research-tools.md](../../../docs/research/chemical-review-research-tools.md)。
+
+“默认路线”表示已配置 adapter 的首选次序，而不是内置凭据或假装外部服务已可用：发现依次优先 OpenAlex、Semantic Scholar、Crossref，术语优先 PubChem、ChEBI，全文优先 Unpaywall、Europe PMC、CORE，解析优先 MinerU、GROBID、Docling。某类能力没有可用 adapter 时必须记录降级，必要时请求用户完成最小配置。
+
+一次 Research 运行必须完成以下可检查结果：
+
+1. 生成七条可调整的检索路径（同义词、定义、方法/材料、关键事件、引用关系、作者/群体、最新进展），并保存查询语境。完成标准：`research-evidence.md` 的 `Search paths` 覆盖七条路径。
+2. 将发现结果写入分层文献集，并保留可继续编辑的证据笔记。完成标准：`literature-set.md` 含 Anchor/core、Extension、Background/definition、Controversy 四个层级，且每条记录保留来源标识。
+3. 记录工具路线、成功能力、替换路线和失败恢复动作；合法全文只接受 `OPEN_ACCESS`、`USER_AUTHORIZED` 或 `INSTITUTION_AUTHORIZED` 的明确访问依据与来源 locator，解析结果还必须含页码或章节 locator。完成标准：`Tool route` 和 `Tool degradation or HUMAN_ACTION_REQUIRED` 均有内容，或明确记录 `None recorded.`。
+4. 给出 Research 交接判断，列出已覆盖方向、高影响未覆盖区域和主要不确定性；不以固定论文数量作为停止条件。完成标准：`Research handoff` 明确提议 `PROTOTYPE`/`PRD`，或说明为何仍 `WAITING_FOR_HUMAN`。
+
+首选解析路线是 MinerU，GROBID 补充结构/参考文献，Docling 作为 fallback；解析器输出只能作为后续阅读线索，不能替代原始 PDF 或人工科学判断。
 
 ## Intent confirmation
 

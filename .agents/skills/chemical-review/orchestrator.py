@@ -191,6 +191,51 @@ class ChemicalReviewOrchestrator:
         )
         return self.resume()
 
+    def run_research(self, config=None) -> WorkflowResult:
+        """Run or rerun Research with replaceable adapters and persist its assets."""
+
+        from research import ResearchConfig, ResearchRunner
+
+        self._require_state("RESEARCH")
+        if config is None:
+            config = ResearchConfig()
+        if not isinstance(config, ResearchConfig):
+            raise TypeError("config must be a ResearchConfig")
+        result = ResearchRunner(self.project_root, today=self.today).run(
+            self.intent_path.read_text(encoding="utf-8"),
+            self.domain_path.read_text(encoding="utf-8"),
+            config,
+            intent_revision=self.resume().assets.get("intent_revision", "0"),
+        )
+        self._update_state(
+            status=result.status,
+            next_action=result.next_action,
+            human_action=result.human_action,
+            research_handoff=result.handoff or "NONE",
+            research_handoff_rationale=result.handoff_rationale,
+            tool_degradation=result.assets.get("tool_degradation", "None recorded."),
+            resume_note="Research assets are persisted; rerun this phase after configuring a missing capability or accepting its handoff.",
+        )
+        return self.resume()
+
+    def accept_research_handoff(self) -> WorkflowResult:
+        """Accept the saved Research proposal and move to Prototype or PRD."""
+
+        state = self._require_state("RESEARCH")
+        if state.get("status") != "READY_FOR_NEXT_PHASE":
+            raise ValueError("Research is not ready for a handoff.")
+        target = state.get("research_handoff", "NONE")
+        if target not in {"PROTOTYPE", "PRD"}:
+            raise ValueError("The saved Research handoff must target PROTOTYPE or PRD.")
+        self._update_state(
+            phase=target,
+            status="ACTIVE",
+            next_action=f"Start the {target} phase from the saved Research evidence package.",
+            human_action="NONE",
+            resume_note=f"Research handoff accepted; {target} is now the current phase.",
+        )
+        return self.resume()
+
     def propose_intent_change(
         self, changes: Mapping[str, str], *, earliest_phase: str = "GRILL"
     ) -> WorkflowResult:
@@ -377,7 +422,7 @@ class ChemicalReviewOrchestrator:
     def _update_state(self, **updates: str | None) -> None:
         metadata, body = _split_frontmatter(self.state_path.read_text(encoding="utf-8"))
         for key, value in updates.items():
-            if key in {"open_questions", "resume_note"}:
+            if key in {"open_questions", "resume_note", "tool_degradation"}:
                 continue
             if value is None:
                 metadata.pop(key, None)
@@ -390,8 +435,12 @@ class ChemicalReviewOrchestrator:
         resume_note = updates.get("resume_note")
         if resume_note is None:
             resume_note = _section_value(body, "Resume note")
+        tool_degradation = updates.get("tool_degradation")
+        if tool_degradation is None:
+            tool_degradation = _section_value(body, "Tool degradation or HUMAN_ACTION_REQUIRED")
         body = _set_section(body, "Open questions and risks", open_questions)
         body = _set_section(body, "Resume note", resume_note)
+        body = _set_section(body, "Tool degradation or HUMAN_ACTION_REQUIRED", tool_degradation)
         self._write(self.state_path, _document(metadata, body))
 
     def _write(self, path: Path, content: str) -> None:

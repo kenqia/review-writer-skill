@@ -11,6 +11,95 @@ FIXTURE_DIR = ROOT / "tests" / "fixtures" / "chemical-review"
 
 sys.path.insert(0, str(SKILL_DIR))
 from orchestrator import ChemicalReviewOrchestrator  # noqa: E402
+from research import (  # noqa: E402
+    CapabilityUnavailable,
+    FullTextResult,
+    ParsedDocument,
+    PaperRecord,
+    ResearchConfig,
+)
+
+
+class FakeDiscovery:
+    def __init__(self, name, papers=None, error=None):
+        self.name = name
+        self.papers = papers or []
+        self.error = error
+        self.calls = []
+
+    def search(self, query, path):
+        self.calls.append((query, path))
+        if self.error:
+            raise self.error
+        return [
+            PaperRecord(
+                identifier=paper.identifier,
+                title=paper.title,
+                authors=paper.authors,
+                year=paper.year,
+                source=self.name,
+                layer=paper.layer,
+                abstract=paper.abstract,
+                doi=paper.doi,
+                keywords=paper.keywords,
+                cited_identifiers=paper.cited_identifiers,
+            )
+            for paper in self.papers
+        ]
+
+
+class FakeEntity:
+    def __init__(self, name, terms=None, error=None):
+        self.name = name
+        self.terms = terms or []
+        self.error = error
+
+    def expand(self, term):
+        if self.error:
+            raise self.error
+        return self.terms
+
+
+class FakeFullText:
+    def __init__(self, name, text=None, error=None, access_basis="OPEN_ACCESS"):
+        self.name = name
+        self.text = text
+        self.error = error
+        self.access_basis = access_basis
+
+    def fetch(self, paper):
+        if self.error:
+            raise self.error
+        if self.text is None:
+            return FullTextResult(paper.identifier, "UNAVAILABLE", "", self.name)
+        return FullTextResult(
+            paper.identifier,
+            "FOUND",
+            self.text,
+            self.name,
+            locator=f"fixture://{paper.identifier}.pdf",
+            access_basis=self.access_basis,
+        )
+
+
+class FakeParser:
+    def __init__(self, name, error=None, locators=("section:Results",)):
+        self.name = name
+        self.error = error
+        self.locators = locators
+        self.calls = []
+
+    def parse(self, full_text):
+        self.calls.append(full_text.paper_id)
+        if self.error:
+            raise self.error
+        return ParsedDocument(
+            paper_id=full_text.paper_id,
+            parser=self.name,
+            sections=("Abstract", "Results", "References"),
+            references=("10.1000/example",),
+            locators=self.locators,
+        )
 
 
 class ChemicalReviewContractTests(unittest.TestCase):
@@ -53,6 +142,19 @@ class ChemicalReviewContractTests(unittest.TestCase):
             "missing-information.md": ("open questions", "continue Grill"),
             "resume.md": ("cold restart", "next_action"),
             "confirmed-intent-change.md": ("explicit confirmation", "intent_revision"),
+        }
+        for filename, terms in required.items():
+            fixture = (FIXTURE_DIR / filename).read_text(encoding="utf-8")
+            for term in terms:
+                self.assertIn(term, fixture)
+
+    def test_research_behavior_fixtures_cover_tool_and_handoff_paths(self):
+        required = {
+            "research-success.md": ("multi-path discovery", "layered literature set", "handoff"),
+            "research-replacement.md": ("replaceable", "fallback", "degradation"),
+            "research-tool-failure.md": ("HUMAN_ACTION_REQUIRED", "recovery"),
+            "research-user-recovery.md": ("user-assisted", "rerun", "preserved"),
+            "research-parse-degraded.md": ("MinerU", "GROBID", "Docling", "metadata"),
         }
         for filename, terms in required.items():
             fixture = (FIXTURE_DIR / filename).read_text(encoding="utf-8")
@@ -140,6 +242,383 @@ class ChemicalReviewContractTests(unittest.TestCase):
             self.assertIn("aqueous and gas-phase photocatalytic systems", intent)
             self.assertIn("Intent revision history", intent)
             self.assertNotIn("Pending intent change", intent)
+
+    def test_research_success_expands_paths_and_writes_layered_assets(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = ChemicalReviewOrchestrator(project_dir)
+            orchestrator.start("perovskite solar cell stability")
+            orchestrator.continue_grill(
+                {
+                    "core_claims": "Degradation is governed by coupled ion and interface chemistry.",
+                    "scope": "Perovskite photovoltaic materials",
+                    "exclusions": "Manufacturing economics",
+                    "audience": "Materials chemistry researchers",
+                    "contribution": "A mechanism-centred stability comparison",
+                    "terms": "perovskite; metal halide; PSC",
+                    "core_systems": "absorber, transport layer, and their interfaces",
+                }
+            )
+            orchestrator.confirm_current_intent()
+            papers = [PaperRecord("p1", "Anchor paper", layer="anchor/core", year=2024)]
+            openalex = FakeDiscovery("OpenAlex", papers)
+            result = orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(openalex, FakeDiscovery("Crossref", papers)),
+                    entities=(FakeEntity("PubChem", ["halide perovskite", "metal halide"]),),
+                    full_text=(FakeFullText("Unpaywall", "full text"),),
+                    parsers=(FakeParser("MinerU"),),
+                )
+            )
+
+            self.assertEqual(result.phase, "RESEARCH")
+            self.assertEqual(result.status, "READY_FOR_NEXT_PHASE")
+            self.assertIn(result.assets["research_handoff"], {"PROTOTYPE", "PRD"})
+            evidence = Path(project_dir, "research-evidence.md").read_text(encoding="utf-8")
+            literature = Path(project_dir, "literature-set.md").read_text(encoding="utf-8")
+            for path_name in (
+                "synonyms",
+                "definitions",
+                "methods/materials",
+                "key events",
+                "citation relations",
+                "authors/groups",
+                "recent developments",
+            ):
+                self.assertIn(path_name, evidence)
+            self.assertIn("Anchor/core", literature)
+            self.assertIn("Anchor paper", literature)
+            self.assertIn("MinerU", evidence)
+            self.assertTrue(any("metal halide" in query for query, _ in openalex.calls))
+            self.assertIn("absorber, transport layer", evidence)
+
+    def test_research_tool_replacement_records_route_without_blocking(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = ChemicalReviewOrchestrator(project_dir)
+            orchestrator.start("photoredox catalysis")
+            orchestrator.continue_grill(
+                {
+                    "core_claims": "Photoredox selectivity depends on excited-state pathways.",
+                    "scope": "Organic photoredox reactions",
+                    "exclusions": "Biological photochemistry",
+                    "audience": "Synthetic chemists",
+                    "contribution": "Compare mechanistic descriptors across catalyst families",
+                }
+            )
+            orchestrator.confirm_current_intent()
+            result = orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(FakeDiscovery("Semantic Scholar", [PaperRecord("p2", "Fallback paper")]),),
+                    entities=(FakeEntity("ChEBI", ["photocatalyst"]),),
+                    full_text=(FakeFullText("Europe PMC", "full text"),),
+                    parsers=(FakeParser("GROBID"),),
+                )
+            )
+            evidence = Path(project_dir, "research-evidence.md").read_text(encoding="utf-8")
+            self.assertEqual(result.status, "READY_FOR_NEXT_PHASE")
+            self.assertIn("OpenAlex", evidence)
+            self.assertIn("Semantic Scholar", evidence)
+            self.assertIn("GROBID", evidence)
+            self.assertIn("replacement", evidence.lower())
+
+    def test_research_total_discovery_failure_requests_user_recovery(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = ChemicalReviewOrchestrator(project_dir)
+            orchestrator.start("electrocatalytic ammonia synthesis")
+            orchestrator.continue_grill(
+                {
+                    "core_claims": "Surface structure controls nitrogen activation.",
+                    "scope": "Electrocatalytic systems",
+                    "exclusions": "Thermal catalysis",
+                    "audience": "Electrochemists",
+                    "contribution": "A cross-material mechanistic map",
+                }
+            )
+            orchestrator.confirm_current_intent()
+            result = orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(
+                        FakeDiscovery("OpenAlex", error=CapabilityUnavailable("missing API")),
+                        FakeDiscovery("Semantic Scholar", error=CapabilityUnavailable("missing API")),
+                    )
+                )
+            )
+            self.assertEqual(result.status, "WAITING_FOR_HUMAN")
+            self.assertEqual(result.human_action, "REQUIRED")
+            self.assertIn("HUMAN_ACTION_REQUIRED", Path(project_dir, "research-evidence.md").read_text(encoding="utf-8"))
+            self.assertIn("configure", result.next_action.lower())
+
+    def test_research_recovers_after_user_configures_missing_route(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = ChemicalReviewOrchestrator(project_dir)
+            orchestrator.start("solid electrolyte interfaces")
+            orchestrator.continue_grill(
+                {
+                    "core_claims": "Interphase composition governs ion transport.",
+                    "scope": "Solid-state electrolyte interfaces",
+                    "exclusions": "Liquid electrolytes",
+                    "audience": "Battery materials researchers",
+                    "contribution": "Explain cross-study interface trends",
+                }
+            )
+            orchestrator.confirm_current_intent()
+            orchestrator.run_research(ResearchConfig(discovery=()))
+            recovered = orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(FakeDiscovery("Crossref", [PaperRecord("p3", "Recovered paper")]),),
+                    full_text=(FakeFullText("CORE", "full text"),),
+                    parsers=(FakeParser("Docling"),),
+                )
+            )
+            self.assertEqual(recovered.status, "READY_FOR_NEXT_PHASE")
+            literature = Path(project_dir, "literature-set.md").read_text(encoding="utf-8")
+            self.assertIn("Recovered paper", literature)
+            self.assertIn("Docling", Path(project_dir, "research-evidence.md").read_text(encoding="utf-8"))
+
+    def test_research_parser_failure_keeps_metadata_and_documents_degradation(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = ChemicalReviewOrchestrator(project_dir)
+            orchestrator.start("CO2 capture sorbents")
+            orchestrator.continue_grill(
+                {
+                    "core_claims": "Pore chemistry controls selectivity and regeneration cost.",
+                    "scope": "Porous solid sorbents",
+                    "exclusions": "Aqueous amine absorption",
+                    "audience": "Adsorption researchers",
+                    "contribution": "Compare structure-property tradeoffs",
+                }
+            )
+            orchestrator.confirm_current_intent()
+            result = orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(FakeDiscovery("OpenAlex", [PaperRecord("p4", "Parser failure paper")]),),
+                    full_text=(FakeFullText("Unpaywall", "full text"),),
+                    parsers=(
+                        FakeParser("MinerU", error=CapabilityUnavailable("parse failed")),
+                        FakeParser("GROBID", error=CapabilityUnavailable("parse failed")),
+                        FakeParser("Docling", error=CapabilityUnavailable("parse failed")),
+                    ),
+                )
+            )
+            self.assertEqual(result.status, "READY_FOR_NEXT_PHASE")
+            self.assertEqual(result.human_action, "NONE")
+            evidence = Path(project_dir, "research-evidence.md").read_text(encoding="utf-8")
+            self.assertIn("parse failed", evidence)
+            self.assertIn("full text: Unpaywall", evidence)
+            self.assertIn("access basis: OPEN_ACCESS", evidence)
+            self.assertIn("source locator: fixture://p4.pdf", evidence)
+            self.assertIn("Parser failure paper", Path(project_dir, "literature-set.md").read_text(encoding="utf-8"))
+
+    def test_research_handoff_acceptance_preserves_human_notes(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = ChemicalReviewOrchestrator(project_dir)
+            orchestrator.start("heterogeneous hydrogenation")
+            orchestrator.continue_grill(
+                {
+                    "core_claims": "Surface ensembles shape selectivity.",
+                    "scope": "Heterogeneous hydrogenation catalysts",
+                    "exclusions": "Homogeneous catalysis",
+                    "audience": "Catalysis researchers",
+                    "contribution": "Compare structure-selectivity explanations",
+                }
+            )
+            orchestrator.confirm_current_intent()
+            orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(FakeDiscovery("OpenAlex", [PaperRecord("p5", "Human-note paper")]),),
+                )
+            )
+            evidence_path = Path(project_dir, "research-evidence.md")
+            evidence_path.write_text(
+                evidence_path.read_text(encoding="utf-8").replace(
+                    "## Human notes\n", "## Human notes\n- Compare this with the user's lab results.\n"
+                ),
+                encoding="utf-8",
+            )
+            handed_off = orchestrator.accept_research_handoff()
+            self.assertEqual(handed_off.phase, "PROTOTYPE")
+            self.assertIn("user's lab results", evidence_path.read_text(encoding="utf-8"))
+
+    def test_low_risk_fully_configured_research_can_propose_prd(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._research_ready_project(project_dir)
+            paper = PaperRecord("prd", "Well-scoped anchor")
+            result = orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(
+                        FakeDiscovery("Crossref", [paper]),
+                        FakeDiscovery("Semantic Scholar", [paper]),
+                        FakeDiscovery("OpenAlex", [paper]),
+                    ),
+                    entities=(
+                        FakeEntity("ChEBI", ["nickel complex"]),
+                        FakeEntity("PubChem", ["nickel"]),
+                    ),
+                    full_text=(
+                        FakeFullText("CORE", "full text"),
+                        FakeFullText("Europe PMC", "full text"),
+                        FakeFullText("Unpaywall", "full text"),
+                    ),
+                    parsers=(FakeParser("Docling"), FakeParser("GROBID"), FakeParser("MinerU")),
+                )
+            )
+            self.assertEqual(result.assets["research_handoff"], "PRD")
+            self.assertIn("Direct PRD", result.assets["research_handoff_rationale"])
+            handed_off = orchestrator.accept_research_handoff()
+            self.assertEqual(handed_off.phase, "PRD")
+
+    def test_research_adapts_queries_and_classifies_unlayered_candidates(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._research_ready_project(project_dir)
+            discovery = FakeDiscovery(
+                "OpenAlex",
+                [
+                    PaperRecord(
+                        "adaptive-1",
+                        "Conflicting mechanisms in nickel catalysis",
+                        authors=("A. Chemist",),
+                        keywords=("oxidative addition", "radical pathway"),
+                    )
+                ],
+            )
+            orchestrator.run_research(ResearchConfig(discovery=(discovery,)))
+            queries = [query for query, _ in discovery.calls]
+            self.assertTrue(any("A. Chemist" in query for query in queries))
+            self.assertTrue(any("radical pathway" in query for query in queries))
+            literature = Path(project_dir, "literature-set.md").read_text(encoding="utf-8")
+            self.assertIn("## Controversy", literature)
+            self.assertIn("Conflicting mechanisms", literature)
+
+    def test_research_rerun_keeps_previous_literature_candidates(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._research_ready_project(project_dir)
+            orchestrator.run_research(
+                ResearchConfig(discovery=(FakeDiscovery("OpenAlex", [PaperRecord("old", "Earlier candidate")]),))
+            )
+            orchestrator.run_research(
+                ResearchConfig(discovery=(FakeDiscovery("Crossref", [PaperRecord("new", "New candidate")]),))
+            )
+            literature = Path(project_dir, "literature-set.md").read_text(encoding="utf-8")
+            self.assertIn("Earlier candidate", literature)
+            self.assertIn("New candidate", literature)
+
+    def test_research_rerun_surfaces_and_preserves_direct_human_edit(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._research_ready_project(project_dir)
+            orchestrator.run_research(
+                ResearchConfig(discovery=(FakeDiscovery("OpenAlex", [PaperRecord("edit", "Editable candidate")]),))
+            )
+            evidence_path = Path(project_dir, "research-evidence.md")
+            edited = evidence_path.read_text(encoding="utf-8").replace(
+                "- edit: Editable candidate (OpenAlex);",
+                "- edit: HUMAN CORRECTION - verify catalyst identity (OpenAlex);",
+            )
+            evidence_path.write_text(edited, encoding="utf-8")
+
+            rerun = orchestrator.run_research(
+                ResearchConfig(discovery=(FakeDiscovery("Crossref", [PaperRecord("new-edit", "New run")]),))
+            )
+            evidence = evidence_path.read_text(encoding="utf-8")
+            self.assertEqual(rerun.status, "WAITING_FOR_HUMAN")
+            self.assertEqual(rerun.human_action, "REQUIRED")
+            self.assertIn("Preserved human edits and conflicts", evidence)
+            self.assertIn("HUMAN CORRECTION - verify catalyst identity", evidence)
+
+    def test_mineru_success_still_uses_grobid_as_structure_supplement(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._research_ready_project(project_dir)
+            mineru = FakeParser("MinerU")
+            grobid = FakeParser("GROBID")
+            docling = FakeParser("Docling")
+            orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(FakeDiscovery("OpenAlex", [PaperRecord("p6", "Parsing paper")]),),
+                    full_text=(FakeFullText("Unpaywall", "full text"),),
+                    parsers=(docling, grobid, mineru),
+                )
+            )
+            self.assertEqual(mineru.calls, ["p6"])
+            self.assertEqual(grobid.calls, ["p6"])
+            self.assertEqual(docling.calls, [])
+
+    def test_docling_runs_when_grobid_supplement_fails(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._research_ready_project(project_dir)
+            mineru = FakeParser("MinerU")
+            grobid = FakeParser("GROBID", error=CapabilityUnavailable("structure failed"))
+            docling = FakeParser("Docling")
+            orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(FakeDiscovery("OpenAlex", [PaperRecord("p6b", "Fallback parsing paper")]),),
+                    full_text=(FakeFullText("Unpaywall", "full text"),),
+                    parsers=(docling, grobid, mineru),
+                )
+            )
+            self.assertEqual(mineru.calls, ["p6b"])
+            self.assertEqual(grobid.calls, ["p6b"])
+            self.assertEqual(docling.calls, ["p6b"])
+
+    def test_parser_output_without_page_or_section_locator_is_degraded(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._research_ready_project(project_dir)
+            result = orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(FakeDiscovery("OpenAlex", [PaperRecord("p6c", "No locator paper")]),),
+                    full_text=(FakeFullText("Unpaywall", "full text"),),
+                    parsers=(FakeParser("MinerU", locators=()),),
+                )
+            )
+            self.assertEqual(result.status, "READY_FOR_NEXT_PHASE")
+            evidence = Path(project_dir, "research-evidence.md").read_text(encoding="utf-8")
+            self.assertIn("no page/section locators", evidence)
+            self.assertIn("structured parse: no", evidence)
+
+    def test_full_text_without_legal_access_basis_is_rejected(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._research_ready_project(project_dir)
+            result = orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(FakeDiscovery("OpenAlex", [PaperRecord("p7", "Access paper")]),),
+                    full_text=(FakeFullText("Unknown mirror", "full text", access_basis="UNKNOWN"),),
+                    parsers=(FakeParser("MinerU"),),
+                )
+            )
+            evidence = Path(project_dir, "research-evidence.md").read_text(encoding="utf-8")
+            self.assertEqual(result.status, "WAITING_FOR_HUMAN")
+            self.assertEqual(result.human_action, "REQUIRED")
+            self.assertIn("legal access basis", evidence)
+            self.assertIn("structured parse: no", evidence)
+
+    def test_later_legal_full_text_route_recovers_from_invalid_adapter(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._research_ready_project(project_dir)
+            result = orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(FakeDiscovery("OpenAlex", [PaperRecord("p8", "Legal fallback paper")]),),
+                    full_text=(
+                        FakeFullText("Unknown mirror", "untrusted", access_basis="UNKNOWN"),
+                        FakeFullText("Unpaywall", "authorized text"),
+                    ),
+                    parsers=(FakeParser("MinerU"),),
+                )
+            )
+            self.assertEqual(result.status, "READY_FOR_NEXT_PHASE")
+            evidence = Path(project_dir, "research-evidence.md").read_text(encoding="utf-8")
+            self.assertIn("structured parse: yes", evidence)
+
+    def _research_ready_project(self, project_dir):
+        orchestrator = ChemicalReviewOrchestrator(project_dir)
+        orchestrator.start("nickel-catalyzed cross-coupling")
+        orchestrator.continue_grill(
+            {
+                "core_claims": "Mechanism varies with ligand and substrate class.",
+                "scope": "Nickel-catalyzed C-C coupling",
+                "exclusions": "Palladium-only systems",
+                "audience": "Organometallic chemists",
+                "contribution": "Reconcile competing mechanistic models",
+            }
+        )
+        orchestrator.confirm_current_intent()
+        return orchestrator
 
 
 if __name__ == "__main__":

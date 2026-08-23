@@ -74,6 +74,8 @@ next_action: <one concrete action>
 intent_revision: 0
 intent_confirmation: NOT_REQUIRED | REQUIRED | CONFIRMED
 human_action: NONE | REQUIRED
+research_handoff: NONE | PROTOTYPE | PRD
+research_handoff_rationale: <why this phase is proposed or blocked>
 updated: YYYY-MM-DD
 ---
 
@@ -88,4 +90,60 @@ updated: YYYY-MM-DD
 ## Tool degradation or HUMAN_ACTION_REQUIRED
 
 ## Resume note
+```
+
+## Research assets
+
+Research adds two editable, project-local assets. They are working evidence
+records, not a database or an authority over the original papers.
+
+### `research-evidence.md`
+
+```md
+---
+kind: research-evidence
+schema: 1
+intent_revision: 0
+status: ACTIVE | WAITING_FOR_HUMAN | READY_FOR_NEXT_PHASE
+human_action: NONE | REQUIRED
+research_handoff: NONE | PROTOTYPE | PRD
+next_action: <one concrete action>
+updated: YYYY-MM-DD
+---
+
+# Research Evidence Package
+
+## Research question
+## Project domain context
+## Search paths
+## Terms and chemistry entities
+## Evidence notes
+## Covered directions
+## High-impact uncovered areas
+## Major uncertainties
+## Tool route
+## Tool degradation or HUMAN_ACTION_REQUIRED
+## Research handoff
+## Preserved human edits and conflicts
+## Human notes
+```
+
+### `literature-set.md`
+
+```md
+---
+kind: layered-literature-set
+schema: 1
+intent_revision: 0
+updated: YYYY-MM-DD
+---
+
+# Layered Literature Set
+
+## Anchor/core
+## Extension
+## Background/definition
+## Controversy
+## Preserved human edits and conflicts
+## Human notes
 ```
