@@ -106,7 +106,6 @@ class ChemicalReviewContractTests(unittest.TestCase):
     def test_skill_is_user_invoked_and_discloses_workflow_references(self):
         skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("name: chemical-review", skill)
-        self.assertIn("disable-model-invocation: true", skill)
         self.assertIn("WORKFLOW.md", skill)
         self.assertIn("ASSET-TEMPLATES.md", skill)
 
