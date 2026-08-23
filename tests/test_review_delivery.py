@@ -369,7 +369,9 @@ class ReviewDeliveryTests(unittest.TestCase):
             (
                 "literature-set.md",
                 "layered-literature-set",
-                "# Layered Literature Set\n\n## Anchor/core\n- paper-1\n",
+                "# Layered Literature Set\n\n## Anchor/core\n"
+                "- paper-1: Evidence one [readiness: CLAIM_READY]\n"
+                "- paper-2: Evidence two [readiness: CLAIM_READY]\n",
             ),
             (
                 "unit-plan.md",
@@ -436,6 +438,7 @@ class ReviewDeliveryTests(unittest.TestCase):
                     "kind": "single-review-content-source",
                     "schema": "1",
                     "content_revision": "2",
+                    "readiness": "CLAIM_READY",
                     "status": "ACTIVE",
                     "updated": "2026-08-23",
                 },

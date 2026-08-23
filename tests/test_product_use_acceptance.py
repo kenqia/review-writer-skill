@@ -118,13 +118,16 @@ class ProductUseAcceptanceTests(unittest.TestCase):
             authorized_pdf = root / "authorized-papers" / "paper.pdf"
             authorized_pdf.parent.mkdir()
             authorized_pdf.write_bytes(b"%PDF-1.7 authorized fixture")
+            nested_pdf = authorized_pdf.parent / "nested" / "ignored.pdf"
+            nested_pdf.parent.mkdir()
+            nested_pdf.write_bytes(b"%PDF-1.7 nested fixture")
             orchestrator = self._grill(root, "authorized PDF nickel mechanism review")
             research_result = orchestrator.run_research(
                 ResearchConfig(
                     discovery=(_Discovery(),),
                     full_text=(_FullText(),),
                     parsers=(_Parser(),),
-                    user_pdfs=(authorized_pdf,),
+                    authorized_pdf_dir=authorized_pdf.parent,
                     budget=ResearchBudget(max_queries=10, max_requests=30),
                 )
             )
@@ -137,6 +140,7 @@ class ProductUseAcceptanceTests(unittest.TestCase):
             self.assertIn("USER_AUTHORIZED", registry)
             self.assertIn("PARSED", registry)
             self.assertIn("paper-1.pdf#Results", registry)
+            self.assertNotIn("ignored.pdf", registry)
 
             orchestrator.accept_research_handoff()
             orchestrator.run_prototype(
@@ -228,6 +232,7 @@ class ProductUseAcceptanceTests(unittest.TestCase):
                     target_paragraph="P-1",
                     claim_ids=("mechanism-claim",),
                     citation_ids=("paper-1",),
+                    extraction_status="VERIFIED",
                 )
             )
             inventory.persist()

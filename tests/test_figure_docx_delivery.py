@@ -25,6 +25,16 @@ from orchestrator import ChemicalReviewOrchestrator, _document, _split_frontmatt
 
 
 class FigureDocxDeliveryTests(unittest.TestCase):
+    @staticmethod
+    def _write_source_registry(root: Path, identity: str) -> None:
+        root.joinpath("source-registry.md").write_text(
+            "---\nkind: research-source-registry\nschema: 1\n---\n\n"
+            "| Source ID | Title | Identity | Kind | Provider | Local path | Access basis | Priority | Metadata | Full text | Parser | Locator(s) | Media IDs | Digest | Failure/recovery |\n"
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+            f"| paper:fixture | Fixture | {identity} | DISCOVERED_METADATA | fixture | none | OPEN_ACCESS | NORMAL | DISCOVERED | FOUND | PARSED | p. 1 | none | none | none |\n",
+            encoding="utf-8",
+        )
+
     def test_inventory_supports_scheme_table_and_bound_placement(self):
         with TemporaryDirectory() as project_dir:
             root = Path(project_dir)
@@ -44,6 +54,7 @@ class FigureDocxDeliveryTests(unittest.TestCase):
                     provenance="Cropped from the cited paper.",
                     claim_ids=("claim-1",),
                     citation_ids=("paper-1",),
+                    extraction_status="VERIFIED",
                 )
             )
             table = inventory.register_source_asset(
@@ -123,9 +134,11 @@ class FigureDocxDeliveryTests(unittest.TestCase):
                     target_paragraph="P-1",
                     claim_ids=("claim-1",),
                     citation_ids=("paper-1",),
+                    extraction_status="VERIFIED",
                 )
             )
             inventory.persist()
+            self._write_source_registry(root, "paper-1")
             root.joinpath("review-content.md").write_text(
                 _document(
                     {
@@ -281,9 +294,11 @@ class FigureDocxDeliveryTests(unittest.TestCase):
                     target_paragraph="P-1",
                     claim_ids=("claim-1",),
                     citation_ids=("paper-1",),
+                    extraction_status="VERIFIED",
                 )
             )
             inventory.persist()
+            self._write_source_registry(root, "paper-1")
             root.joinpath("review-content.md").write_text(
                 _document(
                     {
@@ -386,6 +401,61 @@ class FigureDocxDeliveryTests(unittest.TestCase):
             self.assertEqual(metadata["status"], "SELECTED")
             self.assertIn("Example Chemistry", body)
             self.assertIn(guide_digest, body)
+
+    def test_journal_guide_format_constraints_drive_reproducible_docx_styles(self):
+        with TemporaryDirectory() as project_dir:
+            root = Path(project_dir)
+            guide_content = (
+                "Margins: 2 cm.\n"
+                "Font: Arial 10 pt.\n"
+                "Single line spacing.\n"
+                "References must use the journal style."
+            )
+            guide_digest = hashlib.sha256(guide_content.encode("utf-8")).hexdigest()
+            root.joinpath("journal-guide.md").write_text(
+                _document(
+                    {
+                        "kind": "journal-guide-snapshot",
+                        "schema": "1",
+                        "target_journal": "Example Chemistry",
+                        "source_locator": "https://example.org/guide",
+                        "retrieved_at": "2026-08-24",
+                        "content_digest": guide_digest,
+                    },
+                    "# Official Journal Guide Snapshot\n\n"
+                    f"## Guide content\n{guide_content}",
+                ),
+                encoding="utf-8",
+            )
+            profile = JournalProfile.from_guide_snapshot(root)
+            root.joinpath("review-content.md").write_text(
+                _document(
+                    {
+                        "kind": "single-review-content-source",
+                        "schema": "1",
+                        "content_revision": "1",
+                    },
+                    "# Review Content Source\n\n"
+                    "## Content blocks\n\n"
+                    "### Merge 1 · Block\n"
+                    "Section: Results\n"
+                    "Claim level: MODEL_SYNTHESIS\n"
+                    "Contribution type: explanation\n"
+                    "Source units: unit-1\n"
+                    "Evidence IDs: paper-1\n"
+                    "Text:\nA bounded synthesis.\n",
+                ),
+                encoding="utf-8",
+            )
+
+            exported = GenericChemistryDocxExporter(root).export(profile=profile)
+            document = Document(exported.output_path)
+            section = document.sections[0]
+            self.assertAlmostEqual(section.left_margin.inches, 2 / 2.54, places=3)
+            self.assertEqual(document.styles["Normal"].font.name, "Arial")
+            self.assertAlmostEqual(document.styles["Normal"].font.size.pt, 10, places=2)
+            manifest = exported.manifest_path.read_text(encoding="utf-8")
+            self.assertIn("journal_format_mapping: MAPPED_FROM_GUIDE", manifest)
 
     def test_changed_or_unavailable_guide_preserves_old_profile_and_requests_recovery(self):
         with TemporaryDirectory() as project_dir:

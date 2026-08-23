@@ -215,6 +215,11 @@ class ReviewRunner:
         content_metadata, _ = _split_frontmatter(content)
         if content_metadata.get("kind") != "single-review-content-source":
             raise ValueError("review-content.md has the wrong asset kind.")
+        recorded_readiness = content_metadata.get("readiness", "").strip()
+        if recorded_readiness != "CLAIM_READY":
+            raise ValueError(
+                "Review requires review-content.md readiness CLAIM_READY before candidate delivery."
+            )
         blocks = _parse_content_blocks(content)
         included_assets = self._validate_candidate_assets(journal, blocks)
         content_revision = int(content_metadata.get("content_revision", "0"))
@@ -339,6 +344,30 @@ class ReviewRunner:
                     f"{name} has the wrong asset kind; expected {expected_kind}."
                 )
             assets.append(name)
+        evidence_records = _literature_evidence_readiness(
+            (self.project_root / "literature-set.md").read_text(encoding="utf-8")
+        )
+        for block in blocks:
+            for evidence_id in block.evidence_ids:
+                matched = next(
+                    (
+                        readiness
+                        for identity, readiness in evidence_records.items()
+                        if _source_identity_keys(evidence_id) & _source_identity_keys(identity)
+                    ),
+                    None,
+                )
+                if matched is None:
+                    raise ValueError(
+                        f"Content block evidence ID is absent from literature-set.md: {evidence_id}"
+                    )
+                if block.claim_level == "SOURCE_FACT" and matched not in {
+                    "EVIDENCE_READY",
+                    "CLAIM_READY",
+                }:
+                    raise ValueError(
+                        f"SOURCE_FACT evidence is not claim-ready: {evidence_id} ({matched})"
+                    )
         figure_path = self.project_root / "figure-inventory.md"
         if figure_path.exists():
             from delivery import FigureInventory
@@ -406,11 +435,26 @@ class ReviewRunner:
                     f"{name} has the wrong asset kind; expected {expected_kind}."
                 )
             assets.append(name)
+        canonical_content_digest = hashlib.sha256(
+            (self.project_root / "review-content.md").read_bytes()
+        ).hexdigest()
         for path in sorted(self.project_root.glob("*.docx.manifest.md")):
-            metadata, _ = _split_frontmatter(path.read_text(encoding="utf-8"))
+            manifest_text = path.read_text(encoding="utf-8")
+            metadata, _ = _split_frontmatter(manifest_text)
             if metadata.get("kind") != "docx-export-manifest":
                 raise ValueError(
                     f"{path.name} has the wrong asset kind; expected docx-export-manifest."
+                )
+            if metadata.get("source_digest") != canonical_content_digest:
+                raise ValueError(
+                    f"{path.name} is stale relative to the canonical review-content.md digest."
+                )
+            docx_path = path.with_name(path.name[: -len(".manifest.md")])
+            if not docx_path.exists() or metadata.get("output_digest") != hashlib.sha256(
+                docx_path.read_bytes()
+            ).hexdigest():
+                raise ValueError(
+                    f"{path.name} does not match its DOCX output digest."
                 )
             assets.append(str(path.relative_to(self.project_root)))
         unit_paths = tuple(sorted((self.project_root / "units").glob("*.md")))
@@ -841,6 +885,20 @@ def _source_registry_bindings(text: str) -> tuple[dict[str, str], ...]:
             }
         )
     return tuple(values)
+
+
+def _literature_evidence_readiness(text: str) -> dict[str, str]:
+    records: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.startswith("- "):
+            continue
+        entry = line[2:].strip()
+        identity, separator, details = entry.partition(": ")
+        if not separator:
+            continue
+        match = re.search(r"readiness:\s*([A-Z_]+)", details, flags=re.IGNORECASE)
+        records[identity.strip()] = match.group(1).upper() if match else "DISCOVERY_READY"
+    return records
 
 
 def _source_identity_keys(value: str) -> set[str]:

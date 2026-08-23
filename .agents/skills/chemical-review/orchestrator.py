@@ -400,7 +400,24 @@ class ChemicalReviewOrchestrator:
         if not target_journal or not locator:
             raise ValueError("The selected journal must retain its official guide locator.")
         candidate = JournalCandidate(target_journal, "Confirmed target journal", locator)
-        snapshot = (fetcher or HttpJournalGuideFetcher()).fetch(candidate)
+        try:
+            snapshot = (fetcher or HttpJournalGuideFetcher()).fetch(candidate)
+        except Exception:
+            self._update_state(
+                status="WAITING_FOR_HUMAN",
+                next_action=(
+                    "HUMAN_ACTION_REQUIRED: restore access to the official journal guide or provide "
+                    "a fresh official guide locator, then retry."
+                ),
+                journal_guide_status="FAILED",
+                human_action="REQUIRED",
+                open_questions="The selected journal guide could not be fetched.",
+                resume_note=(
+                    "No replacement guide was persisted; any existing journal-profile.md remains authoritative "
+                    "until a refreshed guide is captured."
+                ),
+            )
+            return self.resume()
         guide = _document(
             {
                 "kind": "journal-guide-snapshot",
@@ -905,9 +922,40 @@ class ChemicalReviewOrchestrator:
                 if profile_path.exists()
                 else JournalProfile.unselected()
             )
-        return GenericChemistryDocxExporter(self.project_root).export(
-            output_path, profile=profile
-        )
+        if profile.status == "SELECTED" and profile.adaptation_status == "GAP":
+            from delivery import DocxExportError
+
+            error = DocxExportError(
+                profile.recovery_action
+                or "Journal profile is stale or unavailable; refresh the official guide before exporting."
+            )
+            if self.state_path.exists():
+                self._update_state(
+                    status="WAITING_FOR_HUMAN",
+                    next_action="HUMAN_ACTION_REQUIRED: " + str(error),
+                    human_action="REQUIRED",
+                    open_questions=str(error),
+                    resume_note="Generic Markdown remains canonical; journal adaptation must be refreshed.",
+                )
+            raise error
+        exporter = GenericChemistryDocxExporter(self.project_root)
+        try:
+            return exporter.export(output_path, profile=profile)
+        except Exception as error:
+            from delivery import DocxExportError
+
+            if isinstance(error, DocxExportError) and self.state_path.exists():
+                self._update_state(
+                    status="WAITING_FOR_HUMAN",
+                    next_action=(
+                        "HUMAN_ACTION_REQUIRED: preserve the existing DOCX and resolve its digest conflict "
+                        "before exporting again."
+                    ),
+                    human_action="REQUIRED",
+                    open_questions=str(error),
+                    resume_note="The DOCX was not overwritten; review-content.md remains canonical.",
+                )
+            raise
 
     def retry_review_unit(self, unit_id: str) -> WorkflowResult:
         """Resume one blocked unit after its missing capability or input is addressed."""

@@ -138,7 +138,7 @@ class JournalProfile:
             guide_locator=metadata.get("source_locator", ""),
             guide_retrieved_at=metadata.get("retrieved_at", ""),
             guide_digest=digest,
-            requirements=requirements,
+            requirements=requirements or _derive_journal_requirements(content),
             adaptation_status="MET",
         )
 
@@ -291,6 +291,19 @@ class DocxExportResult:
     status: str
 
 
+@dataclass(frozen=True)
+class _JournalFormatSettings:
+    """Conservative DOCX settings derivable from explicit guide requirements."""
+
+    margin_top: float = 1.0
+    margin_bottom: float = 1.0
+    margin_left: float = 1.0
+    margin_right: float = 1.0
+    font_name: str = "Times New Roman"
+    font_size: float = 11.0
+    line_spacing: float = 1.5
+
+
 class FigureInventory:
     """Project-local Markdown inventory for source-bound visual assets."""
 
@@ -350,7 +363,7 @@ class FigureInventory:
                 resolution=asset.resolution or "N/A",
                 extraction_status=asset.extraction_status
                 if asset.extraction_status != "UNKNOWN"
-                else "VERIFIED",
+                else "UNVERIFIED",
             )
         else:
             if not asset.source_path.strip():
@@ -371,7 +384,7 @@ class FigureInventory:
                 resolution=resolution,
                 extraction_status=asset.extraction_status
                 if asset.extraction_status != "UNKNOWN"
-                else "VERIFIED",
+                else "UNVERIFIED",
             )
         self.assets[asset.asset_id] = registered
         return registered
@@ -482,11 +495,14 @@ class FigureInventory:
 
     def validate_for_delivery(self) -> tuple[FigureAsset, ...]:
         validated: list[FigureAsset] = []
+        registry: tuple[dict[str, str], ...] | None = None
         for asset in self.assets.values():
             if asset.status != "SOURCE":
                 raise ValueError(
                     f"Figure {asset.asset_id} is not a verified source figure: {asset.status}"
                 )
+            if registry is None:
+                registry = _load_source_registry(self.project_root)
             if not all(
                 value.strip()
                 for value in (
@@ -502,9 +518,21 @@ class FigureInventory:
                 raise ValueError(
                     f"Figure {asset.asset_id} is missing provenance, locator, or placement."
                 )
+            if not _stable_locator(asset.locator):
+                raise ValueError(
+                    f"Figure {asset.asset_id} requires a page/section/asset locator."
+                )
             if not asset.claim_ids or not asset.citation_ids:
                 raise ValueError(
                     f"Figure {asset.asset_id} requires claim and citation placement bindings."
+                )
+            if not any(
+                _identity_keys(asset.source_id)
+                & (_identity_keys(row["source_id"]) | _identity_keys(row["identity"]))
+                for row in registry
+            ):
+                raise ValueError(
+                    f"Figure {asset.asset_id} source identity is absent from source-registry.md."
                 )
             if asset.asset_type not in ASSET_TYPES:
                 raise ValueError(f"Asset {asset.asset_id} has an unknown type: {asset.asset_type}")
@@ -605,6 +633,7 @@ class GenericChemistryDocxExporter:
                 f"- Equations: {qa['equation_count']}\n"
                 f"- Image resolution: {qa['image_resolution_status']}\n"
                 f"- Layout: {qa['layout_status']}\n\n"
+                f"- Journal format mapping: {qa['journal_format_mapping']}\n\n"
                 "This is format evidence, not scientific or journal acceptance.\n",
             ).rstrip()
             + "\n",
@@ -652,15 +681,19 @@ class GenericChemistryDocxExporter:
         if Document is None or WD_LINE_SPACING is None or Inches is None or Pt is None:
             raise DocxExportError("DOCX export dependencies are unavailable.")
         document = Document()
+        settings = _journal_format_settings(profile)
         section = document.sections[0]
-        section.top_margin = Inches(1)
-        section.bottom_margin = Inches(1)
-        section.left_margin = Inches(1)
-        section.right_margin = Inches(1)
+        section.top_margin = Inches(settings.margin_top)
+        section.bottom_margin = Inches(settings.margin_bottom)
+        section.left_margin = Inches(settings.margin_left)
+        section.right_margin = Inches(settings.margin_right)
         normal = document.styles["Normal"]
-        normal.font.name = "Times New Roman"
-        normal.font.size = Pt(11)
-        normal.paragraph_format.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
+        normal.font.name = settings.font_name
+        normal.font.size = Pt(settings.font_size)
+        normal.paragraph_format.line_spacing = settings.line_spacing
+        for style_name in ("Title", "Heading 1", "Heading 2", "Heading 3"):
+            style = document.styles[style_name]
+            style.font.name = settings.font_name
         document.core_properties.title = (
             f"Chemical Review — {profile.target_journal}"
             if profile.status == "SELECTED"
@@ -759,6 +792,9 @@ def _export_qa(blocks, assets: tuple[FigureAsset, ...], profile: JournalProfile)
         if all(asset.resolution.strip() for asset in image_assets)
         else "GAP",
         "layout_status": "MET",
+        "journal_format_mapping": (
+            "NOT_APPLICABLE" if profile.status == "NOT_SELECTED" else "MAPPED_FROM_GUIDE"
+        ),
     }
 
 
@@ -835,6 +871,159 @@ def _forbidden_source_provenance(value: str) -> bool:
     return bool(
         re.search(
             r"(?:\bai generated\b|\bgenerated by\b|\bsynthetic\b|\bcomposite\b|\bredrawn?\b)",
+            normalized,
+        )
+    )
+
+
+def _derive_journal_requirements(content: str) -> tuple[str, ...]:
+    """Extract conservative format constraints from the captured official guide."""
+
+    requirements: list[str] = []
+    keywords = (
+        "title",
+        "abstract",
+        "reference",
+        "figure",
+        "scheme",
+        "table",
+        "caption",
+        "word limit",
+        "page limit",
+        "margin",
+        "font",
+        "format",
+        "heading",
+    )
+    for raw_line in content.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip(" #-*")
+        if not line or len(line) > 240 or not any(keyword in line.lower() for keyword in keywords):
+            continue
+        if line not in requirements:
+            requirements.append(line)
+        if len(requirements) == 24:
+            break
+    return tuple(requirements)
+
+
+def _journal_format_settings(profile: JournalProfile) -> _JournalFormatSettings:
+    """Map only unambiguous, machine-actionable guide phrases into DOCX styles.
+
+    Other requirements remain visible in the manifest and journal profile for
+    human review; they are never guessed from a journal name.
+    """
+
+    settings = _JournalFormatSettings()
+    if profile.status != "SELECTED":
+        return settings
+    margins = {
+        "top": settings.margin_top,
+        "bottom": settings.margin_bottom,
+        "left": settings.margin_left,
+        "right": settings.margin_right,
+    }
+    for requirement in profile.requirements:
+        text = re.sub(r"\s+", " ", requirement.strip().lower()).rstrip(".;")
+        margin_matches = re.finditer(
+            r"(?:(top|bottom|left|right)\s+)?margin(?:s)?(?:\s+(?:of|are|is))?\s*[:=]?\s*"
+            r"(\d+(?:\.\d+)?)\s*(mm|cm|in|inch(?:es)?)",
+            text,
+        )
+        for match in margin_matches:
+            value = float(match.group(2))
+            unit = match.group(3)
+            inches = value / 25.4 if unit == "mm" else value / 2.54 if unit == "cm" else value
+            if unit.startswith("inch") or unit == "in":
+                inches = value
+            side = match.group(1)
+            if side:
+                margins[side] = inches
+            else:
+                for key in margins:
+                    margins[key] = inches
+        font_match = re.search(
+            r"(?:font|typeface)\s*[:=]?\s*([a-z][a-z0-9 ._-]{1,48}?)(?:\s+(\d+(?:\.\d+)?)\s*pt)?$",
+            text,
+        )
+        if font_match:
+            candidate = font_match.group(1).strip(" ._-:")
+            if candidate:
+                known_fonts = {
+                    "arial": "Arial",
+                    "calibri": "Calibri",
+                    "georgia": "Georgia",
+                    "helvetica": "Helvetica",
+                    "times new roman": "Times New Roman",
+                }
+                settings = replace(settings, font_name=known_fonts.get(candidate, candidate.title()))
+            if font_match.group(2):
+                settings = replace(settings, font_size=float(font_match.group(2)))
+        size_match = re.search(r"(?:font size|text size)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*pt", text)
+        if size_match:
+            settings = replace(settings, font_size=float(size_match.group(1)))
+        if "double" in text and "spacing" in text:
+            settings = replace(settings, line_spacing=2.0)
+        elif "single" in text and "spacing" in text:
+            settings = replace(settings, line_spacing=1.0)
+        elif "1.5" in text and "spacing" in text:
+            settings = replace(settings, line_spacing=1.5)
+    return replace(
+        settings,
+        margin_top=margins["top"],
+        margin_bottom=margins["bottom"],
+        margin_left=margins["left"],
+        margin_right=margins["right"],
+    )
+
+
+def _load_source_registry(project_root: Path) -> tuple[dict[str, str], ...]:
+    path = project_root / "source-registry.md"
+    if not path.exists():
+        raise FileNotFoundError(
+            "Source-bound delivery requires source-registry.md for identity binding."
+        )
+    lines = path.read_text(encoding="utf-8").splitlines()
+    header_line = next((line for line in lines if line.startswith("| Source ID |")), "")
+    if not header_line:
+        raise ValueError("source-registry.md has no source identity table.")
+    headers = tuple(part.strip() for part in header_line.strip("|").split("|"))
+    try:
+        source_id_index = headers.index("Source ID")
+        identity_index = headers.index("Identity")
+    except ValueError as exc:
+        raise ValueError("source-registry.md is missing Source ID or Identity columns.") from exc
+    rows: list[dict[str, str]] = []
+    for line in lines:
+        if not line.startswith("|") or line == header_line:
+            continue
+        if set(line.replace("|", "").strip()) <= {"-"}:
+            continue
+        cells = tuple(part.strip() for part in line.strip("|").split("|"))
+        if len(cells) != len(headers):
+            continue
+        rows.append({"source_id": cells[source_id_index], "identity": cells[identity_index]})
+    return tuple(rows)
+
+
+def _identity_keys(value: str) -> set[str]:
+    raw = value.strip().strip("<>[]{}\"'").lower()
+    if not raw:
+        return set()
+    keys = {raw}
+    if raw.startswith("doi:"):
+        keys.add("doi:" + raw[4:].rstrip(".,;)").strip())
+    if raw.startswith(("http://", "https://")):
+        parts = raw.split("/", 3)
+        if len(parts) == 4 and parts[2] in {"doi.org", "dx.doi.org", "www.doi.org"}:
+            keys.add("doi:" + parts[3].rstrip(".,;)").strip())
+    return keys
+
+
+def _stable_locator(value: str) -> bool:
+    normalized = value.lower()
+    return bool(
+        re.search(
+            r"(?:#|\bp(?:age)?\.?\s*\d+|\bsection\s*[:#]?\s*\w+|\b(?:figure|scheme|table)\s*\d+)",
             normalized,
         )
     )

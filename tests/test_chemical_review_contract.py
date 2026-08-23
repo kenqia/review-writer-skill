@@ -571,6 +571,20 @@ class ChemicalReviewContractTests(unittest.TestCase):
             self.assertIn("no page/section locators", evidence)
             self.assertIn("structured parse: no", evidence)
 
+    def test_local_pdf_placeholder_locator_is_not_treated_as_page_evidence(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._research_ready_project(project_dir)
+            result = orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(FakeDiscovery("OpenAlex", [PaperRecord("p6d", "Placeholder locator")]),),
+                    full_text=(FakeFullText("Unpaywall", "full text"),),
+                    parsers=(FakeParser("MinerU", locators=("paper.pdf#local-pdf",)),),
+                )
+            )
+            evidence = Path(project_dir, "research-evidence.md").read_text(encoding="utf-8")
+            self.assertEqual(result.assets["readiness"], "DISCOVERY_READY")
+            self.assertIn("no page/section locators", evidence)
+
     def test_full_text_without_legal_access_basis_is_rejected(self):
         with TemporaryDirectory() as project_dir:
             orchestrator = self._research_ready_project(project_dir)

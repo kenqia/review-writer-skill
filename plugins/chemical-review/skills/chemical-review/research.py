@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 from typing import Callable, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlencode, urlsplit, urlunsplit
@@ -314,6 +315,7 @@ class ResearchConfig:
     full_text: Sequence[FullTextAdapter] = ()
     parsers: Sequence[ParserAdapter] = ()
     user_pdfs: Sequence[str | Path] = ()
+    authorized_pdf_dir: str | Path | None = None
     cloud_parser_consent: bool = False
     allow_no_key_fallback: bool = False
     budget: ResearchBudget = field(default_factory=ResearchBudget)
@@ -354,23 +356,39 @@ class _LocalPdfFullTextAdapter:
     def fetch(self, paper: PaperRecord) -> FullTextResult:
         path = Path(paper.local_path)
         try:
-            raw = path.read_bytes()
-        except (OSError, PermissionError):
+            completed = subprocess.run(
+                ["pdftotext", "-layout", str(path), "-"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
             return FullTextResult(
                 paper.identifier,
                 "UNAVAILABLE",
                 "",
                 self.name,
-                locator=f"{path.name}#local-file",
+                locator=f"{path.name}#local-pdf",
+                access_basis="USER_AUTHORIZED",
+                local_path=str(path),
+            )
+        if completed.returncode != 0 or not completed.stdout.strip():
+            return FullTextResult(
+                paper.identifier,
+                "UNAVAILABLE",
+                "",
+                self.name,
+                locator=f"{path.name}#local-pdf",
                 access_basis="USER_AUTHORIZED",
                 local_path=str(path),
             )
         return FullTextResult(
             paper.identifier,
             "FOUND",
-            raw.decode("utf-8", errors="replace"),
+            completed.stdout,
             self.name,
-            locator=f"{path.name}#local-file",
+            locator=f"{path.name}#local-pdf",
             access_basis="USER_AUTHORIZED",
             local_path=str(path),
         )
@@ -499,6 +517,7 @@ class ResearchRunner:
         intent_revision: str = "0",
     ) -> ResearchRunResult:
         config = config or ResearchConfig()
+        config = replace(config, user_pdfs=self._authorized_pdf_paths(config))
         budget = config.budget
         ledger = self._load_ledger()
         cache = self._load_cache() if config.cache_enabled else _empty_cache()
@@ -534,6 +553,9 @@ class ResearchRunner:
         ledger["runs_started"] = int(ledger.get("runs_started", 0)) + 1
         ledger["last_run_id"] = config.run_id or self._run_id(intent_markdown, domain_markdown)
         ledger["budget"] = _budget_dict(budget)
+        # Persist the reset boundary before any external adapter call so an
+        # interrupted run is distinguishable from the previous completed run.
+        self._persist_ledger(ledger)
         human_edit_detected = any(
             _asset_has_direct_edit(path, titles)
             for path, titles in (
@@ -731,7 +753,7 @@ class ResearchRunner:
                     FigureAsset(
                         asset_id=item.asset_id,
                         asset_type=item.asset_type,
-                        source_id=document.paper_id,
+                        source_id=_source_registry_id(document.paper_id),
                         source_path=item.source_path,
                         locator=item.locator,
                         page=item.page,
@@ -762,6 +784,18 @@ class ResearchRunner:
                 )
             )
         return records
+
+    def _authorized_pdf_paths(self, config: ResearchConfig) -> tuple[str | Path, ...]:
+        paths: list[str | Path] = list(config.user_pdfs)
+        if config.authorized_pdf_dir is None:
+            return tuple(paths)
+        root = Path(config.authorized_pdf_dir)
+        if not root.is_dir():
+            return tuple(paths)
+        # The folder is an explicit user-authorized read set; do not recurse
+        # into unrelated project files or follow symlinked directories.
+        paths.extend(path for path in sorted(root.glob("*.pdf")) if path.is_file())
+        return tuple(dict.fromkeys(paths))
 
     def _handoff(
         self,
@@ -924,10 +958,7 @@ class ResearchRunner:
         return value
 
     def _persist_ledger(self, ledger: Mapping[str, object]) -> None:
-        self.ledger_path.write_text(
-            json.dumps(dict(ledger), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        self._atomic_write_json(self.ledger_path, ledger)
 
     def _load_cache(self) -> dict[str, object]:
         if not self.cache_path.exists():
@@ -944,10 +975,17 @@ class ResearchRunner:
         return value
 
     def _persist_cache(self, cache: Mapping[str, object]) -> None:
-        self.cache_path.write_text(
-            json.dumps(dict(cache), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        self._atomic_write_json(self.cache_path, cache)
+
+    @staticmethod
+    def _atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(dict(value), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        temporary.replace(path)
 
     def _source_registry(
         self,
@@ -970,7 +1008,7 @@ class ResearchRunner:
             identity = _canonical_identity(paper.doi or paper.identifier)
             registry.append(
                 SourceRecord(
-                    source_id=f"paper:{_stable_id(identity)}",
+                    source_id=_source_registry_id(identity),
                     identity=identity,
                     title=paper.title,
                     source_kind="DISCOVERED_METADATA",
@@ -1224,8 +1262,10 @@ class ResearchRunner:
                     _ledger_increment(ledger, "cache_hits")
                     _ledger_event(ledger, "discovery-cache-hit", path=path, provider=name)
                 else:
-                    if _budget_exhausted(ledger, "request_count", budget.max_requests) or _budget_exhausted(
-                        ledger, "retries", budget.max_retries
+                    if _budget_exhausted(ledger, "request_count", budget.max_requests) or _retry_budget_exhausted(
+                        ledger, budget.max_retries
+                    ) or _budget_would_exceed(
+                        ledger, "input_tokens", budget.max_input_tokens, query_tokens
                     ):
                         stopping_reason = (
                             f"Run budget stopped discovery while querying path '{path}' "
@@ -1307,6 +1347,8 @@ class ResearchRunner:
                     "consecutive_no_new_rounds": no_new_rounds,
                 }
             )
+            self._persist_ledger(ledger)
+            self._persist_cache(cache)
             if (
                 budget.max_no_new_rounds is not None
                 and no_new_rounds >= budget.max_no_new_rounds
@@ -1334,8 +1376,10 @@ class ResearchRunner:
                     found = tuple(_paper_from_cache(item) for item in cached)
                     _ledger_increment(ledger, "cache_hits")
                 else:
-                    if _budget_exhausted(ledger, "request_count", budget.max_requests) or _budget_exhausted(
-                        ledger, "retries", budget.max_retries
+                    if _budget_exhausted(ledger, "request_count", budget.max_requests) or _retry_budget_exhausted(
+                        ledger, budget.max_retries
+                    ) or _budget_would_exceed(
+                        ledger, "input_tokens", budget.max_input_tokens, query_tokens
                     ):
                         stopping_reason = "Run budget stopped adaptive follow-up discovery (max_requests)."
                         break
@@ -1343,6 +1387,20 @@ class ResearchRunner:
                     _ledger_increment(ledger, "input_tokens", query_tokens)
                     try:
                         found = tuple(adapter.search(query, "adaptive follow-up"))
+                        output_tokens = sum(
+                            _estimate_tokens(paper.title + " " + paper.abstract)
+                            for paper in found
+                            if isinstance(paper, PaperRecord)
+                        )
+                        if _budget_would_exceed(
+                            ledger, "output_tokens", budget.max_output_tokens, output_tokens
+                        ):
+                            stopping_reason = (
+                                "Run budget stopped adaptive follow-up discovery (max_output_tokens)."
+                            )
+                            found = ()
+                        else:
+                            _ledger_increment(ledger, "output_tokens", output_tokens)
                         _cache_put(
                             cache,
                             "discovery",
@@ -1377,6 +1435,8 @@ class ResearchRunner:
                             "Continue from the saved candidates and retry this follow-up path later.",
                         )
                     )
+        self._persist_ledger(ledger)
+        self._persist_cache(cache)
         return list(papers.values()), path_queries, issues, tuple(coverage), stopping_reason
 
     def _adaptive_queries(self, papers: Sequence[PaperRecord]) -> tuple[str, ...]:
@@ -1468,8 +1528,8 @@ class ResearchRunner:
                     candidate = _full_text_from_cache(cached)
                     _ledger_increment(ledger, "cache_hits")
                 else:
-                    if _budget_exhausted(ledger, "request_count", budget.max_requests) or _budget_exhausted(
-                        ledger, "retries", budget.max_retries
+                    if _budget_exhausted(ledger, "request_count", budget.max_requests) or _retry_budget_exhausted(
+                        ledger, budget.max_retries
                     ):
                         issues.append(
                             CapabilityIssue(
@@ -1581,7 +1641,9 @@ class ResearchRunner:
                     document = _parsed_from_cache(cached)
                     _ledger_increment(ledger, "cache_hits")
                     try:
-                        if not document.locators:
+                        if not document.locators or not any(
+                            _stable_document_locator(locator) for locator in document.locators
+                        ):
                             raise ValueError(
                                 "parser returned no page/section locators for the parsed document"
                             )
@@ -1606,8 +1668,8 @@ class ResearchRunner:
                         )
                     continue
                 try:
-                    if _budget_exhausted(ledger, "parser_pages", budget.max_parser_pages) or _budget_exhausted(
-                        ledger, "retries", budget.max_retries
+                    if _budget_exhausted(ledger, "parser_pages", budget.max_parser_pages) or _retry_budget_exhausted(
+                        ledger, budget.max_retries
                     ) or _budget_would_exceed(
                         ledger,
                         "input_tokens",
@@ -1627,7 +1689,9 @@ class ResearchRunner:
                     document = adapter.parse(full_text)
                     if not isinstance(document, ParsedDocument):
                         raise TypeError("parser returned a non-ParsedDocument")
-                    if not document.locators:
+                    if not document.locators or not any(
+                        _stable_document_locator(locator) for locator in document.locators
+                    ):
                         raise ValueError(
                             "parser returned no page/section locators for the parsed document"
                         )
@@ -1662,7 +1726,11 @@ class ResearchRunner:
                     )
             if not parsed_for_paper:
                 # Metadata remains useful even when parsing is degraded.
+                self._persist_ledger(ledger)
+                self._persist_cache(cache)
                 continue
+            self._persist_ledger(ledger)
+            self._persist_cache(cache)
         return accepted_full_texts, parsed, issues
 
     def _uncertainties(
@@ -2181,6 +2249,12 @@ def _budget_would_exceed(
     return limit is not None and int(ledger.get(counter, 0)) + amount > limit
 
 
+def _retry_budget_exhausted(ledger: Mapping[str, object], limit: int | None) -> bool:
+    """Allow the initial attempt; stop only after the retry allowance is used."""
+
+    return limit is not None and int(ledger.get("retries", 0)) > limit
+
+
 def _estimate_tokens(value: str) -> int:
     return max(1, (len(value.strip()) + 3) // 4) if value.strip() else 0
 
@@ -2200,6 +2274,18 @@ def _safe_exception(exc: BaseException) -> str:
         if fragment in lowered:
             return fragment
     return f"{exc.__class__.__name__} (details redacted)"
+
+
+def _stable_document_locator(value: str) -> bool:
+    normalized = str(value).lower()
+    if re.search(r"#\s*local-pdf\b", normalized):
+        return False
+    return bool(
+        re.search(
+            r"(?:#|\bp(?:age)?\.?\s*\d+|\bsection\s*[:#]?\s*\w+|\b(?:figure|scheme|table)\s*\d+)",
+            normalized,
+        )
+    )
 
 
 def _cache_key(kind: str, provider: str, identity: str, context: str = "") -> str:
@@ -2355,6 +2441,12 @@ def _canonical_identity(value: str) -> str:
     identity = identity.removeprefix("https://doi.org/").removeprefix("http://doi.org/")
     identity = identity.rstrip("/.")
     return identity or "unknown"
+
+
+def _source_registry_id(paper_id: str) -> str:
+    identity = _canonical_identity(paper_id)
+    prefix = "user-pdf" if identity.startswith("local-pdf:") else "paper"
+    return f"{prefix}:{_stable_id(identity)}"
 
 
 def _stable_id(value: str) -> str:

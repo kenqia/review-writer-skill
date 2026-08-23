@@ -614,12 +614,17 @@ class UnitManager:
         content = _set_section(content, "Content blocks", merged_content)
         content = _set_section(content, "Merge history", history)
         content = _set_section(content, "Preserved human edits and conflicts", preserved)
+        merged_readiness = (
+            "CLAIM_READY"
+            if blocks and all(_claim_is_ready(claim) for _, claim in blocks)
+            else self._best_preclaim_readiness(blocks)
+        )
         content = _replace_frontmatter(
             content,
                 {
                     "content_revision": str(revision),
                     "status": "ACTIVE",
-                    "readiness": "CLAIM_READY" if blocks else current_readiness,
+                    "readiness": merged_readiness if blocks else current_readiness,
                     "generated_content_blocks_sha256": _content_hash(merged_content),
                 "generated_merge_history_sha256": _content_hash(history),
                 "updated": self.today.isoformat(),
