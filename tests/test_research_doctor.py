@@ -183,6 +183,19 @@ class ResearchDoctorContractTests(unittest.TestCase):
             self.assertIn('"cache_hits":', ledger)
             self.assertRegex(ledger, r'"cache_hits":\s*[1-9]')
 
+    def test_output_budget_rejection_is_not_cached_as_a_free_result(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._ready(project_dir)
+            discovery = _Discovery((PaperRecord("p-budget", "A deliberately long candidate title"),))
+            config = ResearchConfig(
+                discovery=(discovery,),
+                budget=ResearchBudget(max_queries=1, max_output_tokens=1),
+            )
+            first = orchestrator.run_research(config)
+            self.assertEqual(first.assets["readiness"], "DISCOVERY_READY")
+            ChemicalReviewOrchestrator(project_dir).run_research(config)
+            self.assertGreaterEqual(len(discovery.calls), 2)
+
 
 class ResearchDoctorProductUseAcceptanceTests(unittest.TestCase):
     """Narrow user-visible acceptance slices for ticket #19's Research seam."""

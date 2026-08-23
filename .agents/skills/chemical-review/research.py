@@ -1277,12 +1277,6 @@ class ResearchRunner:
                     path_requests += 1
                     try:
                         found = tuple(adapter.search(query, path))
-                        _cache_put(
-                            cache,
-                            "discovery",
-                            cache_key,
-                            [_paper_to_cache(paper) for paper in found if isinstance(paper, PaperRecord)],
-                        )
                         output_tokens = sum(
                             _estimate_tokens(paper.title + " " + paper.abstract)
                             for paper in found
@@ -1298,6 +1292,12 @@ class ResearchRunner:
                             found = ()
                         else:
                             _ledger_increment(ledger, "output_tokens", output_tokens)
+                            _cache_put(
+                                cache,
+                                "discovery",
+                                cache_key,
+                                [_paper_to_cache(paper) for paper in found if isinstance(paper, PaperRecord)],
+                            )
                     except Exception as exc:  # one provider must not stop other paths
                         _ledger_increment(ledger, "retries")
                         issues.append(
