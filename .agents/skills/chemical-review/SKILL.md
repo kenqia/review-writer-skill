@@ -15,7 +15,7 @@ argument-hint: "一个化学综述主题或研究想法"
 2. 在用户明确的项目根目录检查 `workflow-state.md`、`review-intent.md` 和 `domain-profile.md`；可执行的最小文件编排器见 [orchestrator.py](orchestrator.py)。完成标准：三个资产全部存在且 frontmatter 可读，或已确认这是没有状态的全新项目。
 3. 全新项目只向用户索取主题或研究想法，然后由 orchestrator 创建三个资产并进入 Grill；不要求用户填写内部表单或 JSON。完成标准：`workflow-state.md` 的 `phase` 为 `GRILL`，并且意图资产含有未猜测的开放问题和下一步提示。
 4. 已有状态时读取 `workflow-state.md` 的 `phase`、`next_action` 和 `intent_confirmation`，从保存阶段继续，不重启 Grill 或补写缺失历史。完成标准：对外返回的阶段和下一动作与刚加载的 Markdown 状态一致。
-5. 本次阶段工作完成后更新下一动作、未决风险和恢复提示；Research 维护证据资产，Prototype 维护小样本结果，PRD 维护可修订蓝图，Review 反馈按最早失效阶段回退。完成标准：重新加载三个核心资产和已存在的阶段资产能重建本次运行的阶段、修订号和人类动作要求。
+5. 本次阶段工作完成后更新下一动作、未决风险和恢复提示；Research 维护证据资产，Prototype 维护小样本结果，PRD 维护可修订蓝图，Issues/Implement 维护独立 unit 资产并只通过 orchestrator 合并单一内容源，Review 反馈按最早失效阶段回退。完成标准：重新加载三个核心资产和已存在的阶段资产能重建本次运行的阶段、修订号、ready units 和人类动作要求。
 
 ## Phase loop
 
@@ -29,7 +29,7 @@ argument-hint: "一个化学综述主题或研究想法"
 | Implement | 如何把研究、比较、推理和写作结果合并到单一内容源？ |
 | Review | 价值、化学推理、诚信底线、意图对齐和交付格式是否需要下一轮？ |
 
-Research、Prototype、PRD、Issues、Implement 和 Review 的详细行为在后续 tickets 中逐步实现；本入口只负责统一路由、状态恢复和确认边界。
+Research、Prototype、PRD、Issues 和 Implement 的执行契约见 [WORKFLOW.md](WORKFLOW.md)；Review 与反馈闭环在后续 tickets 中实现。本入口只暴露一个统一路由、状态恢复、确认和中央合并边界。
 
 ## Human boundary
 

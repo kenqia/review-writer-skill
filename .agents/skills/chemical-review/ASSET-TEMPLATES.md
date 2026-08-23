@@ -81,6 +81,9 @@ prototype_handoff: NONE | RESEARCH | PRD
 prototype_handoff_rationale: <why this phase is proposed>
 blueprint_status: NONE | ADAPTABLE
 blueprint_revision: 0
+unit_plan_status: NONE | READY_FOR_ACCEPTANCE | ACCEPTED
+unit_ready: <comma-separated unit IDs or NONE>
+content_revision: 0
 updated: YYYY-MM-DD
 ---
 
@@ -213,5 +216,93 @@ updated: YYYY-MM-DD
 ## Known risks
 ## Candidate research/writing units
 ## Revision history
+## Human notes
+```
+
+## Issues and Implement assets
+
+### `unit-plan.md`
+
+```md
+---
+kind: research-writing-unit-plan
+schema: 1
+status: READY_FOR_ACCEPTANCE
+blueprint_revision: 0
+unit_count: 0
+updated: YYYY-MM-DD
+---
+
+# Research/Writing Unit Plan
+
+## Blueprint basis
+## Units
+## Initially parallel-ready
+## Human notes
+```
+
+### `units/<unit-id>.md`
+
+```md
+---
+kind: research-writing-unit
+schema: 1
+unit_id: <stable lowercase ID>
+unit_kind: <term verification, comparison, mechanism branch, section claim, ...>
+status: PENDING | READY | BLOCKED | COMPLETE | MERGED
+prerequisites: <comma-separated IDs or NONE>
+updated: YYYY-MM-DD
+---
+
+# Research/Writing Unit
+
+## Purpose
+## Prerequisites
+## Completion signal
+## Remaining uncertainty
+## Latest result
+<!-- findings、claim blocks、tool degradation 和 HUMAN_ACTION_REQUIRED -->
+## Result history
+## Preserved human edits and conflicts
+## Human notes
+```
+
+### `merge-review.md`
+
+```md
+---
+kind: central-unit-merge-review
+schema: 1
+status: CONFLICT | RESOLVED
+updated: YYYY-MM-DD
+---
+
+# Central Unit Merge Review
+
+## Selected units
+## Conflicting sections
+## Accepted resolutions
+## Preserved human edits and conflicts
+## Human notes
+```
+
+### `review-content.md`
+
+```md
+---
+kind: single-review-content-source
+schema: 1
+content_revision: 0
+status: ACTIVE
+updated: YYYY-MM-DD
+---
+
+# Review Content Source
+
+## Content blocks
+<!-- section、claim level、contribution type、source units、evidence IDs、text -->
+## Merge history
+<!-- accepted unit IDs、deterministic merge key、blocks added；系统保存 history hash 用于安全恢复。 -->
+## Preserved human edits and conflicts
 ## Human notes
 ```

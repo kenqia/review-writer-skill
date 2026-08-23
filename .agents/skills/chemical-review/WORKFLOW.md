@@ -62,6 +62,18 @@ Prototype 是化学综述的小样本试作，不是软件原型或语言质量�
 
 PRD 把已保存的意图、Research 与可选 Prototype 结果转成 `review-blueprint.md`。蓝图必须包含研究问题、核心论点候选、章节结构、叙事主线、比较维度、证据策略、预期贡献、期刊要求、风险和候选研究/写作单元。它保持 `ADAPTABLE` 与 `frozen: false`：新证据只修订受影响部分，并在 `Revision history` 保留原因和旧内容；不预先分配每句话或冻结论文清单。Prototype 重跑若发现 tracked section 被直接编辑，会把编辑原文保存在 `Preserved human edits and conflicts`；蓝图修订覆盖同一章节前，会在 revision history 明示并保留检测到的人类编辑。
 
+## Issues and Implement execution contract
+
+Issues 把研究者接受的蓝图拆成少量 `ResearchWritingUnit`。每个 unit 必须说明 purpose、prerequisites、completion signal 和 remaining uncertainty；unit 类型保持开放，可以是术语核验、检索/解析、跨论文比较、机制分支、争议解释或章节论点。依赖图必须无环；ready 查询和结果提交都会重新核验 prerequisites，手改或陈旧的 `READY` 状态不能绕过未完成 blocker。多个 ready units 可以由 agent 并行执行或以任意安全顺序提交结果，不要求本 skill 自建线程池、任务队列或后台服务。
+
+Implement 遵守两个写入边界：
+
+1. 每个 worker 只写 `unit-plan.md` 已声明的 `units/<unit-id>.md`，保存 findings、completion evidence、remaining uncertainty、tool degradation/HUMAN_ACTION_REQUIRED 和可选 claim blocks。完成标准：rogue unit 或依赖未满足的 unit 不能提交；受阻 unit 保留当前结果并可在能力恢复后 retry。
+2. claim block 区分 `SOURCE_FACT`、`MODEL_SYNTHESIS`、`MODEL_HYPOTHESIS`，并标明 comparison、explanation、rebuttal、trend、hypothesis 或 section draft 等贡献类型。所有已声明 evidence IDs 都必须存在于当前 `literature-set.md`，且 `SOURCE_FACT` 不能省略 evidence IDs；模型综合与假设仍保留其性质，不被伪装成文献事实。
+3. unit worker 不能直接修改 `review-content.md`。orchestrator 通过显式 central merge 接受结果；同一 section 的兼容贡献可以并存，只有 agent 判断为真实语义冲突的 section 才进入 `merge-review.md` 等待 resolution。每次成功 merge 在 hash-bound history 保存 accepted unit IDs 与确定性 merge key；若内容已写而 unit 状态写入失败，以同一集合或其中已记录的失败子集重试只完成状态收敛，不重复追加内容。直接编辑 Merge history 会被保留并进入 `HUMAN_ACTION_REQUIRED`，不能被当成恢复事实。完成标准：所有候选结果和冲突输入都保留，人类编辑被检测并作为下一次合并输入，不发生静默覆盖。
+
+`review-content.md` 是后续双轨交付的单一内容源，但 Issue #5 只生成带 claim-level 语义的内容块；干净稿、研究者版和多层 Review 由后续 Review 阶段生成。工程测试只验证依赖、资产和合并契约，不证明化学判断正确。
+
 ## Intent confirmation
 
 当模型建议改变研究问题、核心论点方向、范围、排除项、目标读者或目标期刊时，the change requires **explicit confirmation**：

@@ -1,10 +1,9 @@
 """Small, file-backed orchestrator for the chemical-review skill.
 
-The module deliberately owns only the three Markdown assets named by the skill
-contract.  It does not discover papers or write review prose; later phases own
-those capabilities.  Keeping this seam executable makes the start/resume and
-human-confirmation boundaries testable without introducing a service or a
-second state store.
+The orchestrator owns phase transitions and the central merge boundary while
+stage modules own their human-readable Markdown assets. Keeping this seam
+executable makes start/resume, confirmation, dependency, and write-ownership
+boundaries testable without introducing a service or a second state store.
 """
 
 from __future__ import annotations
@@ -319,6 +318,191 @@ class ChemicalReviewOrchestrator:
             human_action="NONE",
             resume_note="Only the requested blueprint sections changed; prior revisions remain visible.",
         )
+        return self.resume()
+
+    def accept_review_blueprint(self) -> WorkflowResult:
+        """Accept the saved PRD blueprint and enter Issues decomposition."""
+
+        state = self._require_state("PRD")
+        if state.get("status") != "READY_FOR_NEXT_PHASE":
+            raise ValueError("The review blueprint is not ready for acceptance.")
+        if not (self.project_root / "review-blueprint.md").exists():
+            raise FileNotFoundError("PRD acceptance requires review-blueprint.md.")
+        self._update_state(
+            phase="ISSUES",
+            status="ACTIVE",
+            next_action="Decompose the accepted blueprint into dependency-aware research/writing units.",
+            human_action="NONE",
+            resume_note="The adaptable blueprint remains saved while Issues defines executable units.",
+        )
+        return self.resume()
+
+    def create_review_units(self, units) -> WorkflowResult:
+        """Persist the Issues dependency graph without executing any unit."""
+
+        from units import ResearchWritingUnit, UnitManager
+
+        self._require_state("ISSUES")
+        candidates = tuple(units)
+        if not all(isinstance(unit, ResearchWritingUnit) for unit in candidates):
+            raise TypeError("units must contain only ResearchWritingUnit values")
+        ready = UnitManager(self.project_root, today=self.today).create_plan(candidates)
+        self._update_state(
+            status="READY_FOR_NEXT_PHASE",
+            next_action="Review and accept the unit plan before Implement executes ready units.",
+            unit_plan_status="READY_FOR_ACCEPTANCE",
+            unit_ready=", ".join(ready) or "NONE",
+            human_action="NONE",
+            resume_note="Each unit has its own Markdown asset; the review content source is not created yet.",
+        )
+        return self.resume()
+
+    def accept_unit_plan(self) -> WorkflowResult:
+        """Accept the saved unit graph and enter Implement."""
+
+        from units import UnitManager
+
+        state = self._require_state("ISSUES")
+        if state.get("status") != "READY_FOR_NEXT_PHASE":
+            raise ValueError("The research/writing unit plan is not ready for acceptance.")
+        manager = UnitManager(self.project_root, today=self.today)
+        ready = manager.ready_unit_ids()
+        self._update_state(
+            phase="IMPLEMENT",
+            status="ACTIVE",
+            next_action="Execute ready units independently: " + (", ".join(ready) or "none"),
+            unit_plan_status="ACCEPTED",
+            unit_ready=", ".join(ready) or "NONE",
+            human_action="NONE",
+            resume_note="Implement can collect ready unit results in any order; only central merge writes review-content.md.",
+        )
+        return self.resume()
+
+    def ready_review_units(self) -> tuple[str, ...]:
+        """Return the independently executable unit IDs after a cold restart."""
+
+        from units import UnitManager
+
+        self._require_state("IMPLEMENT")
+        return UnitManager(self.project_root, today=self.today).ready_unit_ids()
+
+    def submit_review_unit_result(self, result) -> WorkflowResult:
+        """Store one unit-local result without modifying the central content source."""
+
+        from units import UnitManager, UnitResult
+
+        self._require_state("IMPLEMENT")
+        if not isinstance(result, UnitResult):
+            raise TypeError("result must be a UnitResult")
+        progress = UnitManager(self.project_root, today=self.today).submit_result(result)
+        if progress.unit_status == "BLOCKED":
+            status = "ACTIVE" if progress.ready_ids else "WAITING_FOR_HUMAN"
+            next_action = (
+                "Continue independent ready units: " + ", ".join(progress.ready_ids)
+                if progress.ready_ids
+                else progress.human_action_required
+            )
+            human_action = "REQUIRED"
+        elif progress.all_results_complete:
+            status = "READY_FOR_NEXT_PHASE"
+            next_action = "Centrally merge completed unit results into review-content.md."
+            human_action = "NONE"
+        else:
+            status = "ACTIVE"
+            next_action = "Execute ready units independently: " + (
+                ", ".join(progress.ready_ids) or "none"
+            )
+            human_action = "REQUIRED" if progress.blocked_ids else "NONE"
+        self._update_state(
+            status=status,
+            next_action=next_action,
+            unit_ready=", ".join(progress.ready_ids) or "NONE",
+            human_action=human_action,
+            tool_degradation=progress.tool_degradation or None,
+            open_questions=(
+                "Blocked units: " + ", ".join(progress.blocked_ids)
+                if progress.blocked_ids
+                else None
+            ),
+            resume_note="Unit results remain isolated until the orchestrator performs a visible central merge.",
+        )
+        return self.resume()
+
+    def retry_review_unit(self, unit_id: str) -> WorkflowResult:
+        """Resume one blocked unit after its missing capability or input is addressed."""
+
+        from units import UnitManager
+
+        self._require_state("IMPLEMENT")
+        manager = UnitManager(self.project_root, today=self.today)
+        ready = manager.retry_unit(unit_id)
+        self._update_state(
+            status="ACTIVE",
+            next_action="Retry ready units: " + ", ".join(ready),
+            unit_ready=", ".join(ready) or "NONE",
+            human_action="NONE",
+            tool_degradation="None recorded.",
+            open_questions="None recorded.",
+            resume_note=f"Unit {unit_id} is ready to retry; its earlier blocked result remains in history.",
+        )
+        return self.resume()
+
+    def merge_review_units(
+        self, unit_ids, *, conflict_sections=(), resolutions=()
+    ) -> WorkflowResult:
+        """Centrally merge completed units or surface cross-unit conflicts."""
+
+        from units import MergeHistoryEditConflict, MergeResolution, UnitManager
+
+        self._require_state("IMPLEMENT")
+        selected = tuple(unit_ids)
+        decisions = tuple(resolutions)
+        if not all(isinstance(item, MergeResolution) for item in decisions):
+            raise TypeError("resolutions must contain only MergeResolution values")
+        try:
+            result = UnitManager(self.project_root, today=self.today).merge(
+                selected,
+                conflict_sections=tuple(conflict_sections),
+                resolutions=decisions,
+            )
+        except MergeHistoryEditConflict as error:
+            self._update_state(
+                status="WAITING_FOR_HUMAN",
+                next_action="Resolve the direct edit recorded for review-content.md Merge history.",
+                human_action="REQUIRED",
+                open_questions=str(error),
+                resume_note="No unit status or content block was advanced from the untrusted merge history.",
+            )
+            return self.resume()
+        if result.status == "CONFLICT":
+            self._update_state(
+                status="WAITING_FOR_HUMAN",
+                next_action=(
+                    "Resolve central merge conflicts for: " + ", ".join(result.conflicts)
+                ),
+                human_action="REQUIRED",
+                open_questions="Merge conflicts: " + ", ".join(result.conflicts),
+                resume_note="Unit assets are unchanged; merge-review.md holds both proposals for resolution.",
+            )
+        else:
+            status = "READY_FOR_NEXT_PHASE" if result.all_units_merged else "ACTIVE"
+            next_action = (
+                "Review the single content source before entering Review."
+                if result.all_units_merged
+                else "Continue ready units or centrally merge other completed results."
+            )
+            self._update_state(
+                status=status,
+                next_action=next_action,
+                content_revision=str(result.content_revision),
+                human_action="NONE",
+                open_questions=(
+                    "A direct human content edit was retained and surfaced in review-content.md."
+                    if result.human_edit_detected
+                    else "None recorded."
+                ),
+                resume_note="Accepted changes were merged by the orchestrator; unit result assets remain available.",
+            )
         return self.resume()
 
     def propose_intent_change(
