@@ -26,6 +26,18 @@
 4. 解析优先 MinerU；按文献类型和失败表现切换 GROBID 或 Docling。任何解析器输出都要保留 PDF 页码/章节定位，并对表格、公式、结构图和 SI 做人工复核。
 5. 全部外部服务不可用时仍可用用户提供的 DOI、题录和 PDF 完成受限 Research；结果标注覆盖边界，允许后续迭代补检索。
 
+## 当前内置路线
+
+仓库当前内置 `research.OpenAlexDiscoveryAdapter`，默认由 orchestrator 的
+`run_research()` 通过 `ResearchConfig.default()` 启用，用于真实的 OpenAlex Works 搜索。
+它只负责发现和元数据整理，不把摘要或排名当作化学事实；HTTP、JSON、限流和不可用情况会
+进入 Research 的工具降级记录。其余发现、实体、全文和解析能力仍通过可替换 adapter 注入。
+
+可选环境配置为 `OPENALEX_API_KEY` 和 `OPENALEX_MAILTO`。配置值只用于请求，不写入 Markdown
+资产、错误消息或日志；没有配置时仍尝试公开端点，失败则保留 `HUMAN_ACTION_REQUIRED`/降级路线。
+搜索参数和响应字段依据 [OpenAlex API searching](https://help.openalex.org/api/searching/)；
+实施时仍应记录实际请求日期、端点和服务返回版本/字段。
+
 Adapter 只能声明 `OPEN_ACCESS`、`USER_AUTHORIZED` 或 `INSTITUTION_AUTHORIZED` 三种全文访问依据，并同时返回来源 locator；该声明是可审阅的配置契约，不是平台对版权状态的独立法律裁决。解析输出还需给出 PDF 页码或章节 locator，否则仅保留元数据并记录解析降级。
 
 ## 适用前提与版本记录

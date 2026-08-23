@@ -9,7 +9,7 @@
 
 ## Inputs
 
-最小输入是一个化学综述主题或研究想法。研究者可以随后补充目标读者/期刊、授权 PDF、已有文献、工具配置和自然语言反馈；缺少这些信息时，orchestrator 先追问或给出候选，不把空白静默当作确定答案。
+最小输入是一个化学综述主题或研究想法。研究者可以随后补充目标读者/期刊、授权 PDF、已有文献、工具配置和自然语言反馈；缺少目标读者和期刊时，orchestrator 提议一到三个期刊候选，研究者确认后才读取其当前官方作者指南，不把空白静默当作确定答案。
 
 ## State contract
 
@@ -21,6 +21,9 @@
 - `intent_revision`：综述意图的递增修订号。
 - `intent_confirmation`：`NOT_REQUIRED`、`REQUIRED` 或 `CONFIRMED`。
 - `human_action`：`NONE` 或 `REQUIRED`；对外报告 `HUMAN_ACTION_REQUIRED` 时设为 `REQUIRED`。
+- `journal_status`：`UNSET`、`PROPOSED`、`SELECTED` 或 `NOT_REQUIRED`。
+- `journal_confirmation`：`REQUIRED`、`CONFIRMED` 或 `NOT_APPLICABLE`。
+- `journal_guide_status`：选定期刊后的 `FETCHED` 标记；其 locator 和 digest 也写入状态。
 - `updated`：最近一次写入日期。
 
 正文保留一小段人类可读摘要：当前目标、最近完成的工作、未决问题、工具降级影响和恢复提示。
@@ -28,7 +31,7 @@
 ## Phase transitions
 
 1. 没有状态的主题进入 `GRILL`。
-2. `GRILL` 只有在研究问题、范围、预期贡献和排除项足够明确，且没有未解决的核心意图决定时，才可建议进入 `RESEARCH`。
+2. `GRILL` 只有在研究问题、范围、预期贡献和排除项足够明确，且目标读者已给出，或目标期刊候选已被确认并读取当前官方指南时，才可建议进入 `RESEARCH`。
 3. 首次综述必须经过 `RESEARCH`。后续循环可以依据 Research 交接判断或 Review 反馈继续 Research、进入 `PROTOTYPE` 或恢复到更早阶段。
 4. Research 发现较高的问题边界、比较或价值风险时先进入 `PROTOTYPE`；风险较低且研究者接受 Research 的直接交接理由时可以进入 `PRD`。Prototype 若只有摘要复述或问题没有非平凡综合价值，回到 `GRILL` 或 `RESEARCH`。
 5. `PRD` 形成蓝图后进入 `ISSUES`，`ISSUES` 形成有依赖关系的研究/写作单元后进入 `IMPLEMENT`。
@@ -92,8 +95,8 @@ Review 接受 agent 对化学推理、意图对齐、修订请求、普通不确
 2. 干净稿不显示内部 claim-status 标记。研究者版只对关键内容块显示 `SOURCE_FACT`、`MODEL_SYNTHESIS` 或 `MODEL_HYPOTHESIS`，并保留 contribution、evidence IDs 和 source units；不要求逐句贴标签。
 3. 多层 Review 分别检查综合价值、化学推理、科学诚信、意图对齐、目标期刊适配和双视图同步。Review agent 必须显式给出 `VALUE_PRODUCING` 或 `SUMMARY_ONLY` 及其理由；comparison、explanation、rebuttal、trend、hypothesis 和 new research question 等 contribution 标签只是审查语境，不能自动证明正文超越摘要复述。`SUMMARY_ONLY` 触发可执行修订，不代表模型观点必然正确或错误。
 4. 默认 hard stop 只限四类：`FABRICATED_OR_UNFINDABLE_SOURCE`、`MISQUOTED_SOURCE_DATA`、`INVENTED_CHEMICAL_FACT`、`INFERENCE_AS_SOURCE_FACT`。每个 hard stop 必须给出正文与来源 locator；普通分歧、证据空白和不确定性记录为 `NON_BLOCKING` 提示。
-5. 目标期刊要求必须保留当前官方来源 locator，并按 `MET`、`GAP` 或 `NOT_APPLICABLE` 记录。期刊 gap 可使候选包进入 `REVISION_REQUIRED`，但任何状态都不是接收预测。
-6. Review 同时生成 `review-report.md` 与 `submission-candidate-package.md`。候选包状态只允许 `INTEGRITY_HOLD`、`REVISION_REQUIRED` 或 `SUBMISSION_CANDIDATE`；即使是 `SUBMISSION_CANDIDATE`，也只表示可交给人类科学编辑继续核验，不声明科学有效性或期刊接收。
+5. 目标期刊要求必须保留当前官方作者指南快照、来源 locator 和内容 digest，并按 `MET`、`GAP` 或 `NOT_APPLICABLE` 记录。没有特定期刊但已确认目标读者时，期刊适配为 `NOT_APPLICABLE`。期刊 gap 可使候选包进入 `REVISION_REQUIRED`，但任何状态都不是接收预测。
+6. Review 同时生成 `review-report.md` 与 `submission-candidate-package.md`。候选包生成前必须验证 Research、PRD、unit-plan、unit 资产和单一内容源均存在且 frontmatter kind 正确；候选包状态只允许 `INTEGRITY_HOLD`、`REVISION_REQUIRED` 或 `SUBMISSION_CANDIDATE`；即使是 `SUBMISSION_CANDIDATE`，也只表示可交给人类科学编辑继续核验，不声明科学有效性或期刊接收。
 
 ## Intent confirmation
 

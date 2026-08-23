@@ -10,6 +10,10 @@ kind: review-intent
 schema: 1
 intent_revision: 0
 confirmation: REQUIRED
+journal_status: UNSET | PROPOSED | SELECTED | NOT_REQUIRED
+journal_confirmation: REQUIRED | CONFIRMED | NOT_APPLICABLE
+target_journal: <selected journal when any>
+journal_guide_locator: <official guide locator when selected>
 ---
 
 # Review Intent
@@ -25,6 +29,9 @@ confirmation: REQUIRED
 
 ## Audience or target journal
 <!-- 目标读者或期刊；未确定时保留候选。 -->
+
+## Journal candidates
+<!-- 未指定期刊时由 agent 提出一到三个候选，研究者确认其一。 -->
 
 ## Expected contribution
 <!-- 为什么现在需要这篇综述，它可能改变什么理解或研究决策。 -->
@@ -74,6 +81,11 @@ next_action: <one concrete action>
 intent_revision: 0
 intent_confirmation: NOT_REQUIRED | REQUIRED | CONFIRMED
 human_action: NONE | REQUIRED
+journal_status: UNSET | PROPOSED | SELECTED | NOT_REQUIRED
+journal_confirmation: REQUIRED | CONFIRMED | NOT_APPLICABLE
+journal_guide_status: NONE | FETCHED
+journal_guide_locator: <official guide locator>
+journal_guide_digest: <sha256 of fetched guide content>
 research_handoff: NONE | PROTOTYPE | PRD
 research_handoff_rationale: <why this phase is proposed or blocked>
 prototype_value_status: SUMMARY_ONLY | VALUE_PRODUCING
@@ -109,6 +121,26 @@ updated: YYYY-MM-DD
 ## Tool degradation or HUMAN_ACTION_REQUIRED
 
 ## Resume note
+```
+
+### `journal-guide.md`
+
+```md
+---
+kind: journal-guide-snapshot
+schema: 1
+target_journal: <confirmed journal>
+source_locator: <current official author-guide URL>
+retrieved_at: YYYY-MM-DD
+content_digest: <sha256 of guide content>
+updated: YYYY-MM-DD
+---
+
+# Official Journal Guide Snapshot
+
+## Target journal
+## Source locator
+## Guide content
 ```
 
 ### `review-feedback.md`

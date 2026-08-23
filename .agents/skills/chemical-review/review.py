@@ -7,7 +7,10 @@ from datetime import date
 import hashlib
 from pathlib import Path
 import re
-from typing import Sequence
+from typing import Callable, Protocol, Sequence
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from orchestrator import _document, _section_value, _split_frontmatter
 from units import CLAIM_LEVELS, CONTRIBUTION_TYPES
@@ -42,6 +45,85 @@ class IntegrityFinding:
 
 
 @dataclass(frozen=True)
+class JournalCandidate:
+    """One target-journal option proposed before the researcher confirms it."""
+
+    target_journal: str
+    rationale: str
+    official_guide_locator: str
+
+
+@dataclass(frozen=True)
+class JournalGuideSnapshot:
+    """The exact public author-guide content read for journal adaptation."""
+
+    target_journal: str
+    source_locator: str
+    content: str
+    retrieved_at: str
+    content_digest: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.content_digest:
+            object.__setattr__(
+                self,
+                "content_digest",
+                hashlib.sha256(self.content.encode("utf-8")).hexdigest(),
+            )
+
+
+class JournalGuideFetcher(Protocol):
+    def fetch(self, candidate: JournalCandidate) -> JournalGuideSnapshot: ...
+
+
+class JournalGuideUnavailable(RuntimeError):
+    """The selected journal's official guide could not be fetched."""
+
+
+class HttpJournalGuideFetcher:
+    """Read a public official author guide without storing credentials."""
+
+    def __init__(
+        self,
+        *,
+        timeout: float = 20.0,
+        opener: Callable[..., object] | None = None,
+    ) -> None:
+        self.timeout = timeout
+        self.opener = opener or urlopen
+
+    def fetch(self, candidate: JournalCandidate) -> JournalGuideSnapshot:
+        if not candidate.official_guide_locator.strip():
+            raise ValueError("A journal candidate requires an official guide locator.")
+        parsed_locator = urlparse(candidate.official_guide_locator.strip())
+        if parsed_locator.scheme not in {"http", "https"} or not parsed_locator.netloc:
+            raise ValueError("Official journal guide locators must be absolute HTTP(S) URLs.")
+        request = Request(
+            candidate.official_guide_locator,
+            headers={"User-Agent": "chemical-review-skill/1.0"},
+        )
+        try:
+            response = self.opener(request, timeout=self.timeout)
+            with response as handle:
+                raw = handle.read()
+        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            raise JournalGuideUnavailable(
+                f"Could not read the official guide for {candidate.target_journal}: {exc}"
+            ) from exc
+        content = raw.decode("utf-8", errors="replace").strip()
+        if not content:
+            raise JournalGuideUnavailable(
+                f"The official guide for {candidate.target_journal} was empty."
+            )
+        return JournalGuideSnapshot(
+            target_journal=candidate.target_journal.strip(),
+            source_locator=candidate.official_guide_locator.strip(),
+            content=content,
+            retrieved_at=date.today().isoformat(),
+        )
+
+
+@dataclass(frozen=True)
 class JournalRequirement:
     requirement: str
     status: str
@@ -53,6 +135,7 @@ class JournalRequirement:
 class JournalAdaptation:
     target_journal: str
     requirements: tuple[JournalRequirement, ...]
+    guide: JournalGuideSnapshot
 
 
 @dataclass(frozen=True)
@@ -97,6 +180,15 @@ class ReviewRunner:
         "review-report.md",
         "submission-candidate-package.md",
     )
+    REQUIRED_ASSET_KINDS = {
+        "review-content.md": "single-review-content-source",
+        "review-intent.md": "review-intent",
+        "domain-profile.md": "domain-profile",
+        "research-evidence.md": "research-evidence",
+        "literature-set.md": "layered-literature-set",
+        "review-blueprint.md": "review-blueprint",
+        "unit-plan.md": "research-writing-unit-plan",
+    }
 
     def __init__(self, project_root: str | Path, *, today: date | None = None) -> None:
         self.project_root = Path(project_root)
@@ -105,7 +197,7 @@ class ReviewRunner:
     def run(
         self,
         assessment: ReviewAssessment,
-        journal: JournalAdaptation,
+        journal: JournalAdaptation | None,
     ) -> ReviewRunResult:
         self._validate_inputs(assessment, journal)
         content_path = self.project_root / "review-content.md"
@@ -119,6 +211,7 @@ class ReviewRunner:
             raise FileExistsError(
                 "Review outputs already exist and will not be overwritten: " + ", ".join(existing)
             )
+        included_assets = self._validate_candidate_assets(journal)
 
         content = content_path.read_text(encoding="utf-8")
         content_metadata, _ = _split_frontmatter(content)
@@ -137,7 +230,9 @@ class ReviewRunner:
         value_status = assessment.value_status
         integrity_status = "HARD_STOP" if assessment.integrity_findings else "CLEAR"
         journal_gaps = tuple(
-            requirement for requirement in journal.requirements if requirement.status == "GAP"
+            requirement
+            for requirement in (journal.requirements if journal else ())
+            if requirement.status == "GAP"
         )
         if assessment.integrity_findings:
             package_status = "INTEGRITY_HOLD"
@@ -191,6 +286,7 @@ class ReviewRunner:
                 content_revision=content_revision,
                 source_digest=source_digest,
                 tool_degradation=tool_degradation,
+                included_assets=included_assets,
             ),
         }
         written: list[Path] = []
@@ -212,8 +308,62 @@ class ReviewRunner:
             content_revision=content_revision,
         )
 
+    def _validate_candidate_assets(self, journal: JournalAdaptation | None) -> tuple[str, ...]:
+        intent_text = (self.project_root / "review-intent.md").read_text(encoding="utf-8")
+        intent_target = _intent_target_journal(intent_text)
+        if intent_target and journal is None:
+            raise ValueError(
+                "The confirmed intent names a target journal; provide its fetched JournalAdaptation."
+            )
+        if intent_target and journal is not None and intent_target != journal.target_journal.strip():
+            raise ValueError("JournalAdaptation does not match the confirmed target journal.")
+        missing = [
+            name
+            for name in self.REQUIRED_ASSET_KINDS
+            if not (self.project_root / name).exists()
+        ]
+        if missing:
+            raise FileNotFoundError(
+                "Submission candidate requires saved assets: " + ", ".join(missing)
+            )
+        assets: list[str] = []
+        for name, expected_kind in self.REQUIRED_ASSET_KINDS.items():
+            metadata, _ = _split_frontmatter(
+                (self.project_root / name).read_text(encoding="utf-8")
+            )
+            if metadata.get("kind") != expected_kind:
+                raise ValueError(
+                    f"{name} has the wrong asset kind; expected {expected_kind}."
+                )
+            assets.append(name)
+        unit_paths = tuple(sorted((self.project_root / "units").glob("*.md")))
+        if not unit_paths:
+            raise FileNotFoundError("Submission candidate requires at least one saved unit asset.")
+        assets.extend(str(path.relative_to(self.project_root)) for path in unit_paths)
+        if journal is not None:
+            guide_path = self.project_root / "journal-guide.md"
+            if not guide_path.exists():
+                raise FileNotFoundError("Journal adaptation requires journal-guide.md.")
+            guide_text = guide_path.read_text(encoding="utf-8")
+            guide_metadata, _ = _split_frontmatter(guide_text)
+            if any(
+                guide_metadata.get(key, "") != value
+                for key, value in {
+                    "kind": "journal-guide-snapshot",
+                    "target_journal": journal.target_journal,
+                    "source_locator": journal.guide.source_locator,
+                    "content_digest": journal.guide.content_digest,
+                }.items()
+            ):
+                raise ValueError("journal-guide.md does not match the supplied JournalAdaptation.")
+            guide_content = _section_value(guide_text, "Guide content")
+            if hashlib.sha256(guide_content.encode("utf-8")).hexdigest() != journal.guide.content_digest:
+                raise ValueError("journal-guide.md content digest does not match the supplied guide.")
+            assets.append("journal-guide.md")
+        return tuple(assets)
+
     def _validate_inputs(
-        self, assessment: ReviewAssessment, journal: JournalAdaptation
+        self, assessment: ReviewAssessment, journal: JournalAdaptation | None
     ) -> None:
         if assessment.value_status not in VALUE_STATUSES:
             raise ValueError("Unknown Review value status: " + assessment.value_status)
@@ -235,8 +385,18 @@ class ReviewRunner:
                 )
             ):
                 raise ValueError("Scientific-integrity findings require detail and locators.")
+        if journal is None:
+            return
         if not journal.target_journal.strip() or not journal.requirements:
             raise ValueError("Journal adaptation requires a target and at least one requirement.")
+        guide = journal.guide
+        if guide.target_journal.strip() != journal.target_journal.strip():
+            raise ValueError("Journal guide snapshot does not match the target journal.")
+        if not guide.source_locator.strip() or not guide.content.strip():
+            raise ValueError("Journal adaptation requires a non-empty official guide snapshot.")
+        expected_digest = hashlib.sha256(guide.content.encode("utf-8")).hexdigest()
+        if guide.content_digest != expected_digest:
+            raise ValueError("Journal guide snapshot digest does not match its content.")
         for requirement in journal.requirements:
             if requirement.status not in JOURNAL_STATUSES:
                 raise ValueError("Unknown journal-requirement status: " + requirement.status)
@@ -297,7 +457,7 @@ class ReviewRunner:
     def _review_report(
         self,
         assessment: ReviewAssessment,
-        journal: JournalAdaptation,
+        journal: JournalAdaptation | None,
         *,
         value_status: str,
         value_types: tuple[str, ...],
@@ -343,9 +503,7 @@ class ReviewRunner:
             "## Intent alignment\n"
             f"{_items(assessment.intent_alignment_notes)}\n\n"
             "## Journal adaptation\n"
-            f"Target journal: {journal.target_journal}\n\n"
-            f"{_journal_items(journal.requirements)}\n\n"
-            "Journal adaptation is not a prediction of journal acceptance.\n\n"
+            f"{_journal_section(journal)}\n\n"
             "## Synchronization\n"
             "Status: SYNCHRONIZED\n\n"
             f"Both views were generated from content revision {content_revision} and digest {source_digest}.\n\n"
@@ -362,7 +520,7 @@ class ReviewRunner:
     def _package_manifest(
         self,
         assessment: ReviewAssessment,
-        journal: JournalAdaptation,
+        journal: JournalAdaptation | None,
         *,
         package_status: str,
         value_status: str,
@@ -370,6 +528,7 @@ class ReviewRunner:
         content_revision: int,
         source_digest: str,
         tool_degradation: str,
+        included_assets: Sequence[str],
     ) -> str:
         metadata = {
             "kind": "submission-candidate-package",
@@ -384,7 +543,7 @@ class ReviewRunner:
             + tuple(assessment.nonblocking_uncertainties)
             + tuple(
                 requirement.note
-                for requirement in journal.requirements
+                for requirement in (journal.requirements if journal else ())
                 if requirement.status == "GAP"
             )
         )
@@ -394,14 +553,13 @@ class ReviewRunner:
             f"{package_status}\n\n"
             f"Value: {value_status}; scientific integrity: {integrity_status}; views: SYNCHRONIZED.\n\n"
             "## Included assets\n"
-            "- review-content.md (single content source)\n"
+            + "\n".join(f"- {asset}" for asset in included_assets)
+            + "\n"
             "- clean-manuscript.md\n"
             "- researcher-review.md\n"
-            "- review-report.md\n"
-            "- review-intent.md, research-evidence.md/literature-set.md when present\n"
-            "- review-blueprint.md and unit assets when present\n\n"
+            "- review-report.md\n\n"
             "## Target-journal state\n"
-            f"{journal.target_journal}; formatting readiness is not a prediction of journal acceptance.\n\n"
+            f"{_journal_target_state(journal)}\n\n"
             "## Unresolved questions and next review inputs\n"
             f"{_items(unresolved)}\n\n"
             "## Tool degradation or HUMAN_ACTION_REQUIRED\n"
@@ -535,6 +693,42 @@ def _journal_items(requirements: Sequence[JournalRequirement]) -> str:
         f"(official source: {requirement.source_locator})"
         for requirement in requirements
     )
+
+
+def _journal_section(journal: JournalAdaptation | None) -> str:
+    if journal is None:
+        return (
+            "Target journal: NOT_SELECTED\n\n"
+            "Journal adaptation: NOT_APPLICABLE because the confirmed intent targets a reader, "
+            "not a specific journal."
+        )
+    guide = journal.guide
+    return (
+        f"Target journal: {journal.target_journal}\n\n"
+        f"{_journal_items(journal.requirements)}\n\n"
+        f"Official guide snapshot: {guide.source_locator}; retrieved {guide.retrieved_at}; "
+        f"digest {guide.content_digest}\n\n"
+        "Journal adaptation is not a prediction of journal acceptance."
+    )
+
+
+def _journal_target_state(journal: JournalAdaptation | None) -> str:
+    if journal is None:
+        return "No target journal selected; reader-facing delivery only. Journal adaptation is NOT_APPLICABLE."
+    guide = journal.guide
+    return (
+        f"{journal.target_journal}; official guide snapshot {guide.source_locator} "
+        f"(digest {guide.content_digest}); formatting readiness is not a prediction of journal acceptance."
+    )
+
+
+def _intent_target_journal(intent: str) -> str:
+    metadata, _ = _split_frontmatter(intent)
+    if metadata.get("target_journal", "").strip():
+        return metadata["target_journal"].strip()
+    audience = _section_value(intent, "Audience or target journal")
+    match = re.search(r"(?:^|\n)Target journal:\s*(.+)$", audience, flags=re.MULTILINE)
+    return match.group(1).strip() if match else ""
 
 
 def _nonblank(values: Sequence[str]) -> tuple[str, ...]:

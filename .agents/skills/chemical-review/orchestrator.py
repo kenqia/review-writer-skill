@@ -13,7 +13,7 @@ from datetime import date
 from pathlib import Path
 import re
 import shutil
-from typing import Mapping
+from typing import Mapping, Sequence
 
 
 PHASES = ("GRILL", "RESEARCH", "PROTOTYPE", "PRD", "ISSUES", "IMPLEMENT", "REVIEW")
@@ -24,6 +24,7 @@ _INTENT_HEADINGS = {
     "core_claim_candidates": "Core-claim candidates",
     "scope": "Scope and exclusions",
     "audience": "Audience or target journal",
+    "target_journal": "Audience or target journal",
     "expected_contribution": "Expected contribution",
 }
 _DOMAIN_HEADINGS = {
@@ -44,8 +45,12 @@ _ALIASES = {
     "scope_and_exclusions": "scope",
     "exclusions": "exclusions",
     "audience": "audience",
-    "journal": "audience",
     "audience_or_target_journal": "audience",
+    "target_reader": "audience",
+    "target_journal": "target_journal",
+    "journal": "target_journal",
+    "journal_guide_locator": "journal_guide_locator",
+    "official_guide_locator": "journal_guide_locator",
     "contribution": "expected_contribution",
     "expected_contribution": "expected_contribution",
     "chemical_subfield": "chemical_subfield",
@@ -145,6 +150,7 @@ class ChemicalReviewOrchestrator:
         domain = self.domain_path.read_text(encoding="utf-8")
         normalized = self._normalize_answers(answers)
         intent = self._apply_intent_answers(intent, normalized)
+        intent = self._apply_journal_answers(intent, normalized)
         domain = self._apply_domain_answers(domain, normalized)
         missing = self._missing_intent_fields(intent)
         open_questions = "None recorded." if not missing else "\n".join(f"- {item}" for item in missing)
@@ -152,6 +158,17 @@ class ChemicalReviewOrchestrator:
         self._write(self.intent_path, intent)
         self._write(self.domain_path, domain)
 
+        journal_unresolved = _is_open(_section_value(intent, "Audience or target journal"))
+        if not journal_unresolved:
+            selected_journal = _target_journal_from_intent(intent)
+            intent = _replace_frontmatter(
+                intent,
+                {
+                    "journal_status": "SELECTED" if selected_journal else "NOT_REQUIRED",
+                    "journal_confirmation": "CONFIRMED" if selected_journal else "NOT_APPLICABLE",
+                },
+            )
+            self._write(self.intent_path, intent)
         if missing:
             self._update_state(
                 status="ACTIVE",
@@ -161,11 +178,35 @@ class ChemicalReviewOrchestrator:
                 open_questions=open_questions,
                 resume_note="The project remains in Grill until the core intent is clear.",
             )
+        elif journal_unresolved:
+            self._update_state(
+                status="WAITING_FOR_HUMAN",
+                next_action=(
+                    "Provide a target reader, select a target journal, or ask the agent to propose "
+                    "a small set of journal candidates before Research."
+                ),
+                intent_confirmation="REQUIRED",
+                journal_status="UNSET",
+                journal_confirmation="REQUIRED",
+                human_action="REQUIRED",
+                open_questions="Target reader or journal selection is still required.",
+                resume_note="The core chemistry intent is drafted, but the reader/journal boundary is unresolved.",
+            )
         else:
             self._update_state(
                 status="READY_FOR_NEXT_PHASE",
                 next_action="Confirm the Grill contract before starting Research.",
                 intent_confirmation="REQUIRED",
+                journal_status=(
+                    "SELECTED"
+                    if _target_journal_from_intent(intent)
+                    else "NOT_REQUIRED"
+                ),
+                journal_confirmation=(
+                    "CONFIRMED"
+                    if _target_journal_from_intent(intent)
+                    else "NOT_APPLICABLE"
+                ),
                 human_action="NONE",
                 open_questions="None recorded.",
                 resume_note="All required Grill fields are present; human confirmation is still required.",
@@ -178,6 +219,10 @@ class ChemicalReviewOrchestrator:
         state = self._require_state("GRILL")
         if state.get("status") != "READY_FOR_NEXT_PHASE":
             raise ValueError("The Grill contract is incomplete; answer its open questions first.")
+        if state.get("journal_status") == "SELECTED" and state.get("journal_guide_status") != "FETCHED":
+            raise ValueError(
+                "The selected journal's current official guide must be fetched before Research."
+            )
         intent = self.intent_path.read_text(encoding="utf-8")
         intent = _replace_frontmatter(intent, {"confirmation": "CONFIRMED"})
         self._write(self.intent_path, intent)
@@ -186,8 +231,145 @@ class ChemicalReviewOrchestrator:
             status="ACTIVE",
             next_action="Build the research evidence packet from the confirmed intent.",
             intent_confirmation="CONFIRMED",
+            journal_confirmation=state.get("journal_confirmation", "NOT_APPLICABLE"),
             human_action="NONE",
             resume_note="Research is the first downstream phase after the confirmed Grill contract.",
+        )
+        return self.resume()
+
+    def propose_journal_candidates(self, candidates) -> WorkflowResult:
+        """Persist a small set of journal options for explicit researcher choice."""
+
+        from review import JournalCandidate
+
+        self._require_state("GRILL")
+        values = tuple(candidates)
+        if not 1 <= len(values) <= 3 or not all(
+            isinstance(candidate, JournalCandidate) for candidate in values
+        ):
+            raise ValueError("Journal candidate proposals must contain one to three JournalCandidate values.")
+        names = [candidate.target_journal.strip() for candidate in values]
+        if len(set(names)) != len(names) or any(
+            not candidate.target_journal.strip()
+            or not candidate.rationale.strip()
+            or not candidate.official_guide_locator.strip()
+            for candidate in values
+        ):
+            raise ValueError("Journal candidates require unique names, rationales, and official guide locators.")
+        intent = self.intent_path.read_text(encoding="utf-8")
+        rendered = "\n".join(
+            f"- Journal: {candidate.target_journal.strip()}\n"
+            f"  Rationale: {candidate.rationale.strip()}\n"
+            f"  Official guide: {candidate.official_guide_locator.strip()}"
+            for candidate in values
+        )
+        intent = _set_section(intent, "Journal candidates", rendered)
+        intent = _replace_frontmatter(
+            intent,
+            {
+                "journal_status": "PROPOSED",
+                "journal_confirmation": "REQUIRED",
+            },
+        )
+        self._write(self.intent_path, intent)
+        self._update_state(
+            status="WAITING_FOR_HUMAN",
+            next_action="Confirm one proposed target journal before fetching its current official guide.",
+            intent_confirmation="REQUIRED",
+            journal_status="PROPOSED",
+            journal_confirmation="REQUIRED",
+            human_action="REQUIRED",
+            open_questions="Choose one proposed target journal.",
+            resume_note="Journal candidates are suggestions only; no target journal has been silently selected.",
+        )
+        return self.resume()
+
+    def confirm_journal_candidate(self, target_journal: str) -> WorkflowResult:
+        """Confirm one proposed target journal without fetching it implicitly."""
+
+        state = self._require_state("GRILL")
+        if state.get("journal_status") != "PROPOSED":
+            raise ValueError("There are no pending journal candidates to confirm.")
+        intent = self.intent_path.read_text(encoding="utf-8")
+        candidates = _parse_journal_candidates(_section_value(intent, "Journal candidates"))
+        selected = next(
+            (candidate for candidate in candidates if candidate.target_journal == target_journal.strip()),
+            None,
+        )
+        if selected is None:
+            raise ValueError("The selected journal is not one of the proposed candidates.")
+        intent = _set_section(
+            intent,
+            "Audience or target journal",
+            f"Target journal: {selected.target_journal}\n"
+            f"Official guide: {selected.official_guide_locator}\n"
+            f"Selection rationale: {selected.rationale}",
+        )
+        intent = _replace_frontmatter(
+            intent,
+            {
+                "journal_status": "SELECTED",
+                "journal_confirmation": "CONFIRMED",
+                "target_journal": selected.target_journal,
+                "journal_guide_locator": selected.official_guide_locator,
+            },
+        )
+        self._write(self.intent_path, intent)
+        missing = self._missing_intent_fields(intent)
+        self._update_state(
+            status="ACTIVE" if missing else "READY_FOR_NEXT_PHASE",
+            next_action=(
+                "Continue Grill by answering the remaining open questions."
+                if missing
+                else "Fetch the selected journal's current official guide, then confirm the Grill contract."
+            ),
+            intent_confirmation="REQUIRED",
+            journal_status="SELECTED",
+            journal_confirmation="CONFIRMED",
+            human_action="NONE",
+            open_questions=("\n".join(f"- {item}" for item in missing) if missing else "None recorded."),
+            resume_note="The researcher selected the target journal; its current official guide is still a required input.",
+        )
+        return self.resume()
+
+    def fetch_selected_journal_guide(self, *, fetcher=None) -> WorkflowResult:
+        """Read and persist the selected journal's current official author guide."""
+
+        from review import HttpJournalGuideFetcher, JournalCandidate
+
+        state = self._require_state()
+        if state.get("journal_status") != "SELECTED":
+            raise ValueError("Select a target journal before fetching its official guide.")
+        intent_metadata, _ = _split_frontmatter(self.intent_path.read_text(encoding="utf-8"))
+        target_journal = intent_metadata.get("target_journal", "").strip()
+        locator = intent_metadata.get("journal_guide_locator", "").strip()
+        if not target_journal or not locator:
+            raise ValueError("The selected journal must retain its official guide locator.")
+        candidate = JournalCandidate(target_journal, "Confirmed target journal", locator)
+        snapshot = (fetcher or HttpJournalGuideFetcher()).fetch(candidate)
+        guide = _document(
+            {
+                "kind": "journal-guide-snapshot",
+                "schema": "1",
+                "target_journal": snapshot.target_journal,
+                "source_locator": snapshot.source_locator,
+                "retrieved_at": snapshot.retrieved_at,
+                "content_digest": snapshot.content_digest,
+                "updated": self.today.isoformat(),
+            },
+            "# Official Journal Guide Snapshot\n\n"
+            f"## Target journal\n{snapshot.target_journal}\n\n"
+            f"## Source locator\n{snapshot.source_locator}\n\n"
+            f"## Guide content\n{snapshot.content}\n",
+        )
+        self._write(self.project_root / "journal-guide.md", guide)
+        self._update_state(
+            journal_guide_status="FETCHED",
+            journal_guide_locator=snapshot.source_locator,
+            journal_guide_digest=snapshot.content_digest,
+            next_action="Review the fetched official guide, then confirm the Grill contract before Research.",
+            human_action="NONE",
+            resume_note="The current official journal guide is saved with locator and content digest.",
         )
         return self.resume()
 
@@ -198,7 +380,7 @@ class ChemicalReviewOrchestrator:
 
         self._require_state("RESEARCH")
         if config is None:
-            config = ResearchConfig()
+            config = ResearchConfig.default()
         if not isinstance(config, ResearchConfig):
             raise TypeError("config must be a ResearchConfig")
         result = ResearchRunner(self.project_root, today=self.today).run(
@@ -516,7 +698,7 @@ class ChemicalReviewOrchestrator:
             raise ValueError("Implement must finish its central merge before Review.")
         if not isinstance(assessment, ReviewAssessment):
             raise TypeError("assessment must be a ReviewAssessment")
-        if not isinstance(journal_adaptation, JournalAdaptation):
+        if journal_adaptation is not None and not isinstance(journal_adaptation, JournalAdaptation):
             raise TypeError("journal_adaptation must be a JournalAdaptation")
         original_state = self.state_path.read_text(encoding="utf-8")
         runner = ReviewRunner(self.project_root, today=self.today)
@@ -773,7 +955,7 @@ class ChemicalReviewOrchestrator:
     ) -> WorkflowResult:
         """Hold a core-intent change for explicit human confirmation."""
 
-        self._require_state()
+        state = self._require_state()
         if earliest_phase not in PHASES:
             raise ValueError(f"Unknown workflow phase: {earliest_phase}")
         normalized = self._normalize_answers(changes)
@@ -795,6 +977,7 @@ class ChemicalReviewOrchestrator:
             next_action="Confirm or reject the pending intent change in ordinary language.",
             intent_confirmation="REQUIRED",
             human_action="REQUIRED",
+            pending_previous_intent_confirmation=state.get("intent_confirmation", "NOT_REQUIRED"),
             resume_note=f"The proposal affects {earliest_phase}; downstream assets remain unchanged.",
             pending_earliest_phase=earliest_phase,
         )
@@ -821,7 +1004,19 @@ class ChemicalReviewOrchestrator:
             )
             intent = _set_section(intent, "Intent revision history", history)
             intent = self._apply_intent_answers(intent, proposals)
+            intent = self._apply_journal_answers(intent, proposals)
             intent = _remove_section(intent, "Pending intent change")
+            journal_change = "target_journal" in proposals
+            if journal_change:
+                intent = _replace_frontmatter(
+                    intent,
+                    {
+                        "target_journal": proposals["target_journal"],
+                        "journal_status": "SELECTED",
+                        "journal_confirmation": "CONFIRMED",
+                    },
+                )
+                intent = _remove_frontmatter_keys(intent, ("journal_guide_locator",))
             intent = _replace_frontmatter(intent, {"intent_revision": str(revision + 1), "confirmation": "CONFIRMED"})
             self._write(self.intent_path, intent)
             self._update_state(
@@ -831,6 +1026,17 @@ class ChemicalReviewOrchestrator:
                 intent_revision=str(revision + 1),
                 intent_confirmation="CONFIRMED",
                 human_action="NONE",
+                journal_status="SELECTED" if journal_change else state.get("journal_status"),
+                journal_confirmation=(
+                    "CONFIRMED" if journal_change else state.get("journal_confirmation")
+                ),
+                journal_guide_status=(
+                    "NONE" if journal_change else state.get("journal_guide_status")
+                ),
+                journal_guide_digest=(
+                    None if journal_change else state.get("journal_guide_digest")
+                ),
+                pending_previous_intent_confirmation=None,
                 resume_note="The accepted change is routed to the earliest affected phase.",
                 pending_earliest_phase=None,
             )
@@ -840,8 +1046,9 @@ class ChemicalReviewOrchestrator:
             self._update_state(
                 status="ACTIVE",
                 next_action=f"Continue {state.get('phase', 'GRILL')} from the saved state.",
-                intent_confirmation="CONFIRMED",
+                intent_confirmation=state.get("pending_previous_intent_confirmation", state.get("intent_confirmation", "NOT_REQUIRED")),
                 human_action="NONE",
+                pending_previous_intent_confirmation=None,
                 resume_note="The proposed change was rejected; the prior intent remains authoritative.",
                 pending_earliest_phase=None,
             )
@@ -854,6 +1061,8 @@ class ChemicalReviewOrchestrator:
                 "schema": "1",
                 "intent_revision": "0",
                 "confirmation": "REQUIRED",
+                "journal_status": "UNSET",
+                "journal_confirmation": "REQUIRED",
             },
             "# Review Intent\n\n"
             f"## Research question\n{topic}\n\n"
@@ -861,6 +1070,7 @@ class ChemicalReviewOrchestrator:
             "## Scope and exclusions\nScope: Open question: define the included chemistry.\n"
             "Exclusions: Open question: define what is out of scope.\n\n"
             "## Audience or target journal\nOpen question: identify the intended reader or journal.\n\n"
+            "## Journal candidates\nNone recorded.\n\n"
             "## Expected contribution\nOpen question: explain why this review matters now.\n\n"
             "## Open questions\n- Core claim\n- Scope and exclusions\n- Audience or target journal\n- Expected contribution\n",
         )
@@ -884,6 +1094,8 @@ class ChemicalReviewOrchestrator:
                 "next_action": "Answer the Grill research question, core-claim, scope/exclusions, audience/journal, and contribution prompts.",
                 "intent_revision": "0",
                 "intent_confirmation": "REQUIRED",
+                "journal_status": "UNSET",
+                "journal_confirmation": "REQUIRED",
                 "human_action": "NONE",
                 "updated": self.today.isoformat(),
             },
@@ -922,6 +1134,20 @@ class ChemicalReviewOrchestrator:
             intent = _set_section(intent, "Scope and exclusions", f"Scope: {scope}\nExclusions: {answers['exclusions']}")
         return intent
 
+    def _apply_journal_answers(self, intent: str, answers: Mapping[str, str]) -> str:
+        if "target_journal" not in answers:
+            return intent
+        current = _section_value(intent, "Audience or target journal")
+        target_reader = _labeled_value(current, "Target reader")
+        reader_line = f"Target reader: {target_reader}\n" if target_reader else ""
+        guide = answers.get("journal_guide_locator", "")
+        guide_line = f"Official guide: {guide}\n" if guide else ""
+        return _set_section(
+            intent,
+            "Audience or target journal",
+            f"{reader_line}Target journal: {answers['target_journal']}\n{guide_line}".rstrip(),
+        )
+
     def _apply_domain_answers(self, domain: str, answers: Mapping[str, str]) -> str:
         for key, heading in _DOMAIN_HEADINGS.items():
             if key in answers:
@@ -937,8 +1163,6 @@ class ChemicalReviewOrchestrator:
             missing.append("Scope")
         if _is_open(_labeled_value(scope, "Exclusions")):
             missing.append("Exclusions")
-        if _is_open(_section_value(intent, "Audience or target journal")):
-            missing.append("Audience or target journal")
         if _is_open(_section_value(intent, "Expected contribution")):
             missing.append("Expected contribution")
         return missing
@@ -1017,6 +1241,13 @@ def _replace_frontmatter(text: str, updates: Mapping[str, str]) -> str:
     return _document(metadata, body)
 
 
+def _remove_frontmatter_keys(text: str, keys: Sequence[str]) -> str:
+    metadata, body = _split_frontmatter(text)
+    for key in keys:
+        metadata.pop(key, None)
+    return _document(metadata, body)
+
+
 def _section_pattern(title: str) -> re.Pattern[str]:
     return re.compile(rf"^## {re.escape(title)}\n(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
 
@@ -1074,3 +1305,44 @@ def _parse_bullets(value: str) -> dict[str, str]:
         if separator and (key.strip() in _INTENT_HEADINGS or key.strip() == "exclusions"):
             parsed[key.strip()] = item.strip()
     return parsed
+
+
+def _target_journal_from_intent(intent: str) -> str:
+    metadata, _ = _split_frontmatter(intent) if intent.startswith("---\n") else ({}, intent)
+    target = metadata.get("target_journal", "").strip()
+    if target:
+        return target
+    audience = _section_value(intent, "Audience or target journal")
+    return _labeled_value(audience, "Target journal")
+
+
+def _parse_journal_candidates(value: str):
+    from review import JournalCandidate
+
+    candidates: list[JournalCandidate] = []
+    current: dict[str, str] = {}
+    for line in value.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- Journal:"):
+            if current:
+                candidates.append(
+                    JournalCandidate(
+                        current.get("target_journal", ""),
+                        current.get("rationale", ""),
+                        current.get("official_guide_locator", ""),
+                    )
+                )
+            current = {"target_journal": stripped.split(":", 1)[1].strip()}
+        elif stripped.startswith("Rationale:"):
+            current["rationale"] = stripped.split(":", 1)[1].strip()
+        elif stripped.startswith("Official guide:"):
+            current["official_guide_locator"] = stripped.split(":", 1)[1].strip()
+    if current:
+        candidates.append(
+            JournalCandidate(
+                current.get("target_journal", ""),
+                current.get("rationale", ""),
+                current.get("official_guide_locator", ""),
+            )
+        )
+    return tuple(candidates)

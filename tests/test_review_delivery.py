@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 import sys
 from tempfile import TemporaryDirectory
 import unittest
@@ -17,6 +18,7 @@ from orchestrator import (  # noqa: E402
 from review import (  # noqa: E402
     IntegrityFinding,
     JournalAdaptation,
+    JournalGuideSnapshot,
     JournalRequirement,
     ReviewAssessment,
 )
@@ -72,6 +74,8 @@ class ReviewDeliveryTests(unittest.TestCase):
             )
             self.assertIn("SUBMISSION_CANDIDATE", package)
             self.assertIn("does not claim scientific validity or journal acceptance", package)
+            self.assertIn("research-evidence.md", package)
+            self.assertIn("units/fixture-unit.md", package)
 
     def test_fluent_summary_without_synthesis_value_requires_revision(self):
         with TemporaryDirectory() as project_dir:
@@ -245,6 +249,12 @@ class ReviewDeliveryTests(unittest.TestCase):
                         source_locator="https://example.org/official-author-guide",
                     ),
                 ),
+                guide=JournalGuideSnapshot(
+                    target_journal="Example Chemistry",
+                    source_locator="https://example.org/official-author-guide",
+                    content="Review format and graphical abstract requirements.",
+                    retrieved_at="2026-08-23",
+                ),
             )
 
             result = orchestrator.run_review(self._assessment(), journal)
@@ -259,6 +269,30 @@ class ReviewDeliveryTests(unittest.TestCase):
             )
             self.assertIn("REVISION_REQUIRED", package)
             self.assertIn("not a prediction of journal acceptance", package)
+
+    def test_candidate_package_requires_research_and_plan_assets(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._review_ready_project(project_dir)
+            Path(project_dir, "research-evidence.md").unlink()
+
+            with self.assertRaisesRegex(FileNotFoundError, "research-evidence.md"):
+                orchestrator.run_review(self._assessment(), self._journal_adaptation())
+
+    def test_reader_only_delivery_does_not_require_journal_adaptation(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._review_ready_project(project_dir)
+            intent_path = Path(project_dir, "review-intent.md")
+            intent = intent_path.read_text(encoding="utf-8")
+            intent_path.write_text(
+                intent.replace("Example Chemistry", "Target reader: Chemistry researchers"),
+                encoding="utf-8",
+            )
+
+            result = orchestrator.run_review(self._assessment(), None)
+
+            self.assertEqual(result.status, "CANDIDATE_READY")
+            report = Path(project_dir, "review-report.md").read_text(encoding="utf-8")
+            self.assertIn("NOT_APPLICABLE", report)
 
     def _review_ready_project(self, project_dir, *, blocks=None):
         root = Path(project_dir)
@@ -323,6 +357,52 @@ class ReviewDeliveryTests(unittest.TestCase):
                 "# Review Blueprint\n\n"
                 "## Narrative line\nFrom disagreement to condition-dependent branches.\n\n"
                 "## Target-journal requirements\nUse the current official author guide.\n",
+            ),
+            encoding="utf-8",
+        )
+        for filename, kind, body in (
+            (
+                "research-evidence.md",
+                "research-evidence",
+                "# Research Evidence Package\n\n## Search paths\n- synonyms\n",
+            ),
+            (
+                "literature-set.md",
+                "layered-literature-set",
+                "# Layered Literature Set\n\n## Anchor/core\n- paper-1\n",
+            ),
+            (
+                "unit-plan.md",
+                "research-writing-unit-plan",
+                "# Research/Writing Unit Plan\n\n## Units\n- fixture-unit\n",
+            ),
+        ):
+            root.joinpath(filename).write_text(
+                _document({"kind": kind, "schema": "1", "updated": "2026-08-23"}, body),
+                encoding="utf-8",
+            )
+        root.joinpath("units").mkdir()
+        root.joinpath("units", "fixture-unit.md").write_text(
+            _document(
+                {"kind": "research-writing-unit", "schema": "1", "status": "MERGED"},
+                "# Research/Writing Unit: fixture-unit\n",
+            ),
+            encoding="utf-8",
+        )
+        root.joinpath("journal-guide.md").write_text(
+            _document(
+                {
+                    "kind": "journal-guide-snapshot",
+                    "schema": "1",
+                    "target_journal": "Example Chemistry",
+                    "source_locator": "https://example.org/official-author-guide",
+                    "retrieved_at": "2026-08-23",
+                    "content_digest": hashlib.sha256(
+                        b"Review format and graphical abstract requirements."
+                    ).hexdigest(),
+                },
+                "# Official Journal Guide Snapshot\n\n"
+                "## Guide content\nReview format and graphical abstract requirements.\n",
             ),
             encoding="utf-8",
         )
@@ -418,6 +498,12 @@ class ReviewDeliveryTests(unittest.TestCase):
                     note="Current section structure matches the review format.",
                     source_locator="https://example.org/official-author-guide",
                 ),
+            ),
+            guide=JournalGuideSnapshot(
+                target_journal="Example Chemistry",
+                source_locator="https://example.org/official-author-guide",
+                content="Review format and graphical abstract requirements.",
+                retrieved_at="2026-08-23",
             ),
         )
 

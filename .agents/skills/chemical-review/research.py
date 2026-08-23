@@ -10,14 +10,90 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import date
 import hashlib
+import json
+import os
 from pathlib import Path
-from typing import Mapping, Protocol, Sequence
+from typing import Callable, Mapping, Protocol, Sequence
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from orchestrator import _document, _section_value, _set_section, _split_frontmatter
 
 
 class CapabilityUnavailable(RuntimeError):
     """An adapter cannot perform its advertised capability."""
+
+
+class OpenAlexDiscoveryAdapter:
+    """Real OpenAlex Works search adapter with explicit, injectable HTTP I/O."""
+
+    name = "OpenAlex"
+
+    def __init__(
+        self,
+        *,
+        base_url: str = "https://api.openalex.org/works",
+        api_key: str = "",
+        mailto: str = "",
+        per_page: int = 10,
+        timeout: float = 20.0,
+        requester: Callable[..., bytes] | None = None,
+    ) -> None:
+        if not base_url.strip():
+            raise ValueError("OpenAlex base_url cannot be blank.")
+        if per_page < 1 or per_page > 200:
+            raise ValueError("OpenAlex per_page must be between 1 and 200.")
+        if timeout <= 0:
+            raise ValueError("OpenAlex timeout must be positive.")
+        self.base_url = base_url.rstrip("?")
+        self.api_key = api_key.strip()
+        self.mailto = mailto.strip()
+        self.per_page = per_page
+        self.timeout = timeout
+        self.requester = requester or self._request
+
+    @classmethod
+    def from_environment(cls) -> "OpenAlexDiscoveryAdapter":
+        """Build the adapter from optional environment configuration.
+
+        Values are read but never emitted into research assets or error messages.
+        """
+
+        return cls(
+            api_key=os.environ.get("OPENALEX_API_KEY", ""),
+            mailto=os.environ.get("OPENALEX_MAILTO", ""),
+        )
+
+    def search(self, query: str, path: str) -> Sequence[PaperRecord]:
+        query = query.strip()
+        if not query:
+            raise ValueError("OpenAlex search query cannot be blank.")
+        parameters = {"search": query, "per-page": str(self.per_page)}
+        if self.api_key:
+            parameters["api_key"] = self.api_key
+        if self.mailto:
+            parameters["mailto"] = self.mailto
+        request_url = f"{self.base_url}?{urlencode(parameters)}"
+        request = Request(
+            request_url,
+            headers={"Accept": "application/json", "User-Agent": "chemical-review-skill/1.0"},
+        )
+        try:
+            payload = json.loads(self.requester(request, self.timeout).decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            raise CapabilityUnavailable(f"OpenAlex request failed: {exc}") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
+            raise CapabilityUnavailable("OpenAlex returned an unreadable JSON response.") from exc
+        results = payload.get("results") if isinstance(payload, dict) else None
+        if not isinstance(results, list):
+            raise CapabilityUnavailable("OpenAlex response did not contain a results list.")
+        return tuple(_paper_from_openalex(record) for record in results if isinstance(record, dict))
+
+    @staticmethod
+    def _request(request: Request, timeout: float) -> bytes:
+        with urlopen(request, timeout=timeout) as response:
+            return response.read()
 
 
 class DiscoveryAdapter(Protocol):
@@ -95,6 +171,12 @@ class ResearchConfig:
     entities: Sequence[EntityAdapter] = ()
     full_text: Sequence[FullTextAdapter] = ()
     parsers: Sequence[ParserAdapter] = ()
+
+    @classmethod
+    def default(cls) -> "ResearchConfig":
+        """Return the smallest real route; other capabilities remain replaceable fallbacks."""
+
+        return cls(discovery=(OpenAlexDiscoveryAdapter.from_environment(),))
 
 
 @dataclass(frozen=True)
@@ -794,6 +876,57 @@ def _preferred(adapters: Sequence[object], providers: Sequence[str]) -> tuple[ob
             ),
         )
     )
+
+
+def _paper_from_openalex(record: Mapping[str, object]) -> PaperRecord:
+    identifier = str(record.get("id") or record.get("doi") or "").strip()
+    title = str(record.get("title") or "").strip()
+    if not identifier or not title:
+        raise CapabilityUnavailable("OpenAlex returned a work without an identifier or title.")
+    authorships = record.get("authorships") or ()
+    authors = tuple(
+        str((authorship.get("author") or {}).get("display_name") or "").strip()
+        for authorship in authorships
+        if isinstance(authorship, Mapping)
+        and isinstance(authorship.get("author"), Mapping)
+        and str((authorship.get("author") or {}).get("display_name") or "").strip()
+    )
+    keywords = tuple(
+        str(keyword.get("display_name") or "").strip()
+        for keyword in (record.get("keywords") or ())
+        if isinstance(keyword, Mapping) and str(keyword.get("display_name") or "").strip()
+    )
+    referenced = tuple(
+        str(value).strip()
+        for value in (record.get("referenced_works") or ())
+        if str(value).strip()
+    )
+    year = record.get("publication_year")
+    publication_year = year if isinstance(year, int) else None
+    return PaperRecord(
+        identifier=identifier,
+        title=title,
+        authors=authors,
+        year=publication_year,
+        source="OpenAlex",
+        abstract=_abstract_from_inverted_index(record.get("abstract_inverted_index")),
+        doi=str(record.get("doi") or "").strip(),
+        keywords=keywords,
+        cited_identifiers=referenced,
+    )
+
+
+def _abstract_from_inverted_index(value: object) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    tokens: list[tuple[int, str]] = []
+    for word, positions in value.items():
+        if not isinstance(word, str) or not isinstance(positions, Sequence):
+            continue
+        for position in positions:
+            if isinstance(position, int):
+                tokens.append((position, word))
+    return " ".join(word for _, word in sorted(tokens))
 
 
 def _layer_name(layer: str, *, default: str = "extension") -> str:

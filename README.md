@@ -13,7 +13,8 @@ This repository contains project-scoped, editable copies of the stable engineeri
 - Triage vocabulary: `docs/agents/triage-labels.md`
 - Domain documentation: single-context, configured by `docs/agents/domain.md`
 
-Product requirements and chemistry domain terminology have not yet been defined. They will be developed through the installed specification and domain-modeling workflow.
+Product requirements and chemistry domain terminology are defined in `CONTEXT.md` and the
+`chemical-review` workflow contract; both remain intentionally adaptable as the skill evolves.
 
 ## Chemical review skill
 
@@ -28,4 +29,5 @@ The first product slice is the user-invoked `chemical-review` skill. It starts f
 - Dependency-aware research/writing units and central merge: `.agents/skills/chemical-review/units.py`
 - Multi-layer Review and synchronized dual-track delivery: `.agents/skills/chemical-review/review.py`
 - Human-feedback routing and safe iterative resume: `.agents/skills/chemical-review/feedback.py`
+- Default live discovery route: OpenAlex Works search (optional `OPENALEX_API_KEY` / `OPENALEX_MAILTO`)
 - Public tool-boundary notes: `docs/research/chemical-review-research-tools.md`
