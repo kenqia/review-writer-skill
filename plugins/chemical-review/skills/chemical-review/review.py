@@ -351,10 +351,13 @@ class ReviewRunner:
                     f"{name} has the wrong asset kind; expected {expected_kind}."
                 )
             assets.append(name)
-        assets.extend(
-            str(path.relative_to(self.project_root))
-            for path in sorted(self.project_root.glob("*.docx.manifest.md"))
-        )
+        for path in sorted(self.project_root.glob("*.docx.manifest.md")):
+            metadata, _ = _split_frontmatter(path.read_text(encoding="utf-8"))
+            if metadata.get("kind") != "docx-export-manifest":
+                raise ValueError(
+                    f"{path.name} has the wrong asset kind; expected docx-export-manifest."
+                )
+            assets.append(str(path.relative_to(self.project_root)))
         unit_paths = tuple(sorted((self.project_root / "units").glob("*.md")))
         if not unit_paths:
             raise FileNotFoundError("Submission candidate requires at least one saved unit asset.")
