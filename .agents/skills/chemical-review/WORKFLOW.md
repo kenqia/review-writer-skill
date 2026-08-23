@@ -37,6 +37,16 @@
 8. 缺少用户动作、授权来源或关键决定时使用 `WAITING_FOR_HUMAN`，并在 `next_action` 写出恢复动作；对外状态和交接报告使用 `HUMAN_ACTION_REQUIRED` 作为明确的用户动作标记。
 9. 研究者确认候选包可以继续人工终审时使用 `CANDIDATE_READY`；这不是科学有效性或期刊接收状态。
 
+## Human-feedback iteration contract
+
+反馈是自然语言协作输入，不要求研究者填写内部 Review 表单。`record_feedback()` 接收普通评论，也可以接收直接编辑后的正文；orchestrator 把它记录到 `review-feedback.md`，并依据反馈内容选择最早失效阶段：意图→Grill、来源/定义→Research、综合价值→Prototype、结构→PRD、单元依赖→Issues、内容合并→Implement、审查或交付→Review。
+
+- 核心研究问题、范围、排除项、受众或目标期刊的反馈先写入 `Pending intent feedback`，原意图保持权威；只有 `confirm_feedback(accept=True)` 后才递增 `intent_revision` 并允许下游重跑。拒绝则移除待定反馈，不改写原意图。
+- 直接人工稿件保存在 `human-edits/manuscript-edit-<revision>.md`，保留原文和来源 digest。digest 不匹配时状态为 `WAITING_FOR_HUMAN`/`CONFLICT`；orchestrator 不会静默覆盖或自动择一。
+- 每次反馈追加一条带 revision、分类、最早阶段、冲突状态和下一动作的 Markdown 记录。冷启动从该日志和 `workflow-state.md` 恢复；Research、blueprint、unit 结果和单一内容源不会因反馈路由被删除。
+- `resume_cycle()` 默认只把状态移到路由阶段；当反馈影响 Review/交付且提供新的 Review assessment 时，它会把旧双轨输出移入 `review-history/feedback-<revision>/`，再从现有单一内容源重新生成同步视图。该操作不重跑上游 Research/Prototype/PRD/Issues。
+- 反馈未能明确匹配时保留到 Review，不能因为无法分类而丢失。每轮结束仍返回当前候选状态、未解决问题、工具降级/HUMAN_ACTION_REQUIRED 和下一动作。
+
 ## Research execution contract
 
 Research 使用随入口提供的可替换 adapter seam。默认能力路线按“发现/元数据 → 化学实体/术语 → 合法全文 → PDF 解析”记录 OpenAlex、Semantic Scholar、Crossref、PubChem、ChEBI、Unpaywall/Europe PMC/CORE、MinerU/GROBID/Docling；配置文件或 adapter 名称只是能力选择，不是科学权威。具体公开职责和降级路线见 [docs/research/chemical-review-research-tools.md](../../../docs/research/chemical-review-research-tools.md)。

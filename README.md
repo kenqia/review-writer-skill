@@ -27,4 +27,5 @@ The first product slice is the user-invoked `chemical-review` skill. It starts f
 - Prototype and blueprint behavior: `.agents/skills/chemical-review/prototype.py`
 - Dependency-aware research/writing units and central merge: `.agents/skills/chemical-review/units.py`
 - Multi-layer Review and synchronized dual-track delivery: `.agents/skills/chemical-review/review.py`
+- Human-feedback routing and safe iterative resume: `.agents/skills/chemical-review/feedback.py`
 - Public tool-boundary notes: `docs/research/chemical-review-research-tools.md`

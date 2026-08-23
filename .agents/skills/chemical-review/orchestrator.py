@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 import re
+import shutil
 from typing import Mapping
 
 
@@ -553,6 +554,218 @@ class ChemicalReviewOrchestrator:
                 (self.project_root / name).unlink(missing_ok=True)
             self._write(self.state_path, original_state)
             raise
+        return self.resume()
+
+    def record_feedback(
+        self,
+        text: str = "",
+        *,
+        edited_manuscript: str | None = None,
+        base_source_digest: str | None = None,
+    ) -> WorkflowResult:
+        """Record ordinary-language feedback and route to its earliest failed phase."""
+
+        from feedback import FeedbackRecorder
+
+        state = self._require_state()
+        if not text.strip() and edited_manuscript is None:
+            raise ValueError("Feedback requires ordinary-language text or a manuscript edit.")
+        original_state = self.state_path.read_text(encoding="utf-8")
+        original_intent = self.intent_path.read_text(encoding="utf-8")
+        feedback_path = self.project_root / "review-feedback.md"
+        original_feedback = feedback_path.read_text(encoding="utf-8") if feedback_path.exists() else None
+        human_edit_dir = self.project_root / "human-edits"
+        original_human_edits = (
+            {path.name for path in human_edit_dir.glob("*.md")}
+            if human_edit_dir.exists()
+            else set()
+        )
+        try:
+            route, revision, conflict = FeedbackRecorder(self.project_root, today=self.today).record(
+                text,
+                edited_manuscript=edited_manuscript,
+                base_source_digest=base_source_digest,
+            )
+            if route.category == "INTENT":
+                intent = self.intent_path.read_text(encoding="utf-8")
+                prior = _section_value(intent, "Pending intent feedback")
+                pending = (prior + "\n\n" if prior else "") + f"Feedback {revision}: {text.strip()}"
+                self._write(self.intent_path, _set_section(intent, "Pending intent feedback", pending))
+                return self._update_feedback_state(
+                    phase="GRILL",
+                    status="WAITING_FOR_HUMAN",
+                    next_action="Confirm or reject the pending intent feedback before downstream regeneration.",
+                    human_action="REQUIRED",
+                    intent_confirmation="REQUIRED",
+                    pending_return_phase=state.get("phase", "GRILL"),
+                    feedback_revision=str(revision),
+                    feedback_category=route.category,
+                    feedback_earliest_phase=route.earliest_phase,
+                    feedback_conflict=conflict,
+                    pending_previous_intent_confirmation=state.get(
+                        "intent_confirmation", "NOT_REQUIRED"
+                    ),
+                    feedback_next_action="Confirm the intent feedback before downstream regeneration.",
+                    open_questions="Pending intent feedback requires explicit confirmation.",
+                    resume_note="The previous intent remains authoritative until the human confirms this feedback.",
+                )
+            status = "WAITING_FOR_HUMAN" if conflict == "CONFLICT" or edited_manuscript is not None else "ACTIVE"
+            human_action = "REQUIRED" if status == "WAITING_FOR_HUMAN" else "NONE"
+            next_action = (
+                "Resolve the preserved human edit conflict before central merge."
+                if conflict == "CONFLICT"
+                else f"Resume {route.earliest_phase} from the saved feedback while preserving prior assets."
+            )
+            return self._update_feedback_state(
+                phase=route.earliest_phase,
+                status=status,
+                next_action=next_action,
+                human_action=human_action,
+                intent_confirmation=state.get("intent_confirmation", "NOT_REQUIRED"),
+                feedback_revision=str(revision),
+                feedback_category=route.category,
+                feedback_earliest_phase=route.earliest_phase,
+                feedback_conflict=conflict,
+                feedback_next_action=next_action,
+                open_questions=(
+                    "A preserved human edit conflicts with the current source digest."
+                    if conflict == "CONFLICT"
+                    else "Prior research, blueprint, unit, and delivery assets are preserved."
+                ),
+                resume_note="Feedback is recorded in review-feedback.md; the next cycle starts at the earliest affected phase.",
+            )
+        except Exception:
+            self._write(self.state_path, original_state)
+            self._write(self.intent_path, original_intent)
+            if original_feedback is None:
+                feedback_path.unlink(missing_ok=True)
+            else:
+                feedback_path.write_text(original_feedback, encoding="utf-8")
+            if human_edit_dir.exists():
+                for path in human_edit_dir.glob("*.md"):
+                    if path.name not in original_human_edits:
+                        path.unlink(missing_ok=True)
+            raise
+
+    def confirm_feedback(self, *, accept: bool) -> WorkflowResult:
+        """Accept or reject pending natural-language intent feedback."""
+
+        state = self._require_state()
+        if state.get("feedback_category") != "INTENT" or state.get("intent_confirmation") != "REQUIRED":
+            raise ValueError("There is no pending intent feedback to confirm.")
+        intent = self.intent_path.read_text(encoding="utf-8")
+        pending = _section_value(intent, "Pending intent feedback")
+        if not pending:
+            raise ValueError("Pending intent feedback is missing or malformed.")
+        original_state = self.state_path.read_text(encoding="utf-8")
+        original_intent = intent
+        try:
+            if accept:
+                revision = int(state.get("intent_revision", "0")) + 1
+                intent = _set_section(intent, "Confirmed intent feedback", pending)
+                intent = _remove_section(intent, "Pending intent feedback")
+                intent = _replace_frontmatter(
+                    intent, {"intent_revision": str(revision), "confirmation": "CONFIRMED"}
+                )
+                self._write(self.intent_path, intent)
+                phase = "GRILL"
+                next_action = "Revisit Grill using the confirmed intent feedback before downstream regeneration."
+                resume_note = "The intent revision is confirmed; downstream assets remain preserved until Grill is revisited."
+            else:
+                intent = _remove_section(intent, "Pending intent feedback")
+                self._write(self.intent_path, intent)
+                revision = int(state.get("intent_revision", "0"))
+                phase = state.get("pending_return_phase", "GRILL")
+                next_action = f"Resume {phase} from the saved state; the intent feedback was rejected."
+                resume_note = "The proposed intent change was rejected; the prior intent remains authoritative."
+            restored_confirmation = (
+                "CONFIRMED"
+                if accept
+                else state.get("pending_previous_intent_confirmation", "NOT_REQUIRED")
+            )
+            return self._update_feedback_state(
+                phase=phase,
+                status="ACTIVE",
+                next_action=next_action,
+                human_action="NONE",
+                intent_revision=str(revision),
+                intent_confirmation=restored_confirmation,
+                pending_return_phase=None,
+                pending_previous_intent_confirmation=None,
+                feedback_requires_confirmation="NONE",
+                feedback_next_action=next_action,
+                open_questions="None recorded.",
+                resume_note=resume_note,
+            )
+        except Exception:
+            self._write(self.state_path, original_state)
+            self._write(self.intent_path, original_intent)
+            raise
+
+    def resume_cycle(self, *, review_assessment=None, journal_adaptation=None) -> WorkflowResult:
+        """Resume only the routed phase; optionally regenerate Review delivery views."""
+
+        from feedback import FeedbackRecorder
+
+        state = self._require_state()
+        metadata = FeedbackRecorder(self.project_root, today=self.today).latest()
+        if state.get("intent_confirmation") == "REQUIRED" and metadata.get("feedback_category") == "INTENT":
+            return self.resume()
+        if metadata.get("feedback_conflict") == "CONFLICT":
+            return self.resume()
+        target = metadata.get("feedback_earliest_phase", state.get("phase", "REVIEW"))
+        if (
+            metadata.get("feedback_category") == "INTENT"
+            and state.get("feedback_requires_confirmation") == "NONE"
+        ):
+            target = state.get("phase", "REVIEW")
+        if target == "REVIEW" and review_assessment is not None and journal_adaptation is not None:
+            history_dir = self.project_root / "review-history" / f"feedback-{metadata.get('feedback_revision', 'unknown')}"
+            from review import ReviewRunner
+
+            existing_history = [
+                name for name in ReviewRunner.OUTPUT_NAMES if (history_dir / name).exists()
+            ]
+            if existing_history:
+                raise FileExistsError(
+                    "review history already exists: " + ", ".join(existing_history)
+                )
+            history_dir.mkdir(parents=True, exist_ok=True)
+
+            original_state = self.state_path.read_text(encoding="utf-8")
+            moved: list[tuple[Path, Path]] = []
+            try:
+                for name in ReviewRunner.OUTPUT_NAMES:
+                    output = self.project_root / name
+                    archived = history_dir / name
+                    if output.exists():
+                        shutil.move(str(output), str(archived))
+                        moved.append((output, archived))
+                self._update_state(
+                    phase="IMPLEMENT",
+                    status="READY_FOR_NEXT_PHASE",
+                    next_action="Regenerate synchronized Review delivery views from the preserved content source.",
+                    human_action="NONE",
+                    resume_note="Only the Review/delivery tail is being rerun; Research, blueprint, units, and content source are preserved.",
+                )
+                return self.run_review(review_assessment, journal_adaptation)
+            except Exception:
+                for output, archived in reversed(moved):
+                    if archived.exists():
+                        archived.replace(output)
+                self._write(self.state_path, original_state)
+                raise
+        return self._update_feedback_state(
+            phase=target,
+            status="ACTIVE",
+            next_action=f"Resume {target} using the saved feedback and preserved upstream assets.",
+            human_action="NONE",
+            feedback_next_action=f"Resume {target} using the saved feedback and preserved upstream assets.",
+            resume_note="This is a partial rerun boundary; unaffected upstream assets are preserved.",
+        )
+
+    def _update_feedback_state(self, **updates: str | None) -> WorkflowResult:
+        self._update_state(**updates)
         return self.resume()
 
     def propose_intent_change(

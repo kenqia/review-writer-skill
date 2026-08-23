@@ -89,6 +89,12 @@ review_value_status: SUMMARY_ONLY | VALUE_PRODUCING
 review_integrity_status: CLEAR | HARD_STOP
 delivery_synchronization: SYNCHRONIZED
 delivery_source_digest: <sha256 of the reviewed content revision>
+feedback_revision: 0
+feedback_category: NONE | INTENT | RESEARCH | PROTOTYPE | PRD | ISSUES | IMPLEMENT | REVIEW | DELIVERY
+feedback_earliest_phase: NONE | GRILL | RESEARCH | PROTOTYPE | PRD | ISSUES | IMPLEMENT | REVIEW
+feedback_requires_confirmation: NONE | REQUIRED
+feedback_conflict: NONE | CONFLICT
+feedback_next_action: <next action after the latest feedback>
 updated: YYYY-MM-DD
 ---
 
@@ -104,6 +110,31 @@ updated: YYYY-MM-DD
 
 ## Resume note
 ```
+
+### `review-feedback.md`
+
+```md
+---
+kind: chemical-review-feedback-log
+schema: 1
+feedback_revision: 0
+feedback_category: NONE | INTENT | RESEARCH | PROTOTYPE | PRD | ISSUES | IMPLEMENT | REVIEW | DELIVERY
+feedback_earliest_phase: NONE | GRILL | RESEARCH | PROTOTYPE | PRD | ISSUES | IMPLEMENT | REVIEW
+feedback_requires_confirmation: NONE | REQUIRED
+feedback_conflict: NONE | CONFLICT
+feedback_next_action: <next action after the latest feedback>
+updated: YYYY-MM-DD
+---
+
+# Review Feedback Log
+
+## Feedback 1
+<!-- category、earliest phase、reason、conflict、base digest 和人类原话。后续反馈追加，不覆盖历史。 -->
+```
+
+### `human-edits/`
+
+直接编辑的稿件按 `manuscript-edit-<feedback_revision>.md` 保存，带 `base_source_digest` 和 `conflict_status`。这是人类输入保留区，不是第二个正文权威；接受编辑前仍须通过 Implement 的中央合并边界。
 
 ## Research assets
 
