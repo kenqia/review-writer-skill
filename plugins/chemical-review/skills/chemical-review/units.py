@@ -621,6 +621,7 @@ class UnitManager:
             f"Resolved text: {resolution.text}"
             for resolution in resolutions
         )
+        conflict_text = "\n\n".join(conflict_sections) or "None."
         metadata = {
             "kind": "central-unit-merge-review",
             "schema": "1",
@@ -632,7 +633,7 @@ class UnitManager:
             "## Selected units\n"
             f"{_items(unit_ids)}\n\n"
             "## Conflicting sections\n"
-            f"{'\n\n'.join(conflict_sections) or 'None.'}\n\n"
+            f"{conflict_text}\n\n"
             "## Accepted resolutions\n"
             f"{resolution_sections or 'None yet.'}\n\n"
             "## Preserved human edits and conflicts\n"

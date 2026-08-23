@@ -89,7 +89,7 @@ MinerU/GROBID/Docling。缺少 API、配额受限或全文受限时，流程必�
 
 ```bash
 python -m unittest discover -s tests -p 'test_*.py'
-ruff check .agents/skills/chemical-review plugins/chemical-review/skills/chemical-review scripts tests
+ruff check --target-version py311 .agents/skills/chemical-review plugins/chemical-review/skills/chemical-review scripts tests
 python scripts/package_plugin.py
 ```
 
