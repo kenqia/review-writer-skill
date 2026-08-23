@@ -56,7 +56,7 @@ codex plugin add chemical-review@review-writer-skill
 安装后新建一个 Codex task，让新 task 载入 plugin，然后使用：
 
 ```text
-/chemical-review
+$chemical-review
 ```
 
 第一次可用这个窄化主题：

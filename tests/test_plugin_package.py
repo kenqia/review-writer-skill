@@ -7,7 +7,9 @@ import sys
 import tempfile
 import unittest
 
+from scripts.build_plugin import _files
 from scripts.package_plugin import release_files
+from scripts.plugin_boundary import RUNTIME_SKILL_FILES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,7 +75,7 @@ class ChemicalReviewPluginTests(unittest.TestCase):
                 (plugin / relative).write_text("ok", encoding="utf-8")
             (plugin / "skills" / "chemical-review" / "SKILL.md").write_text("ok", encoding="utf-8")
             (plugin / ".env").write_text("SECRET=redacted", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "denied file"):
+            with self.assertRaisesRegex(ValueError, "unexpected release files"):
                 list(release_files(plugin))
 
     def test_release_file_allowlist_rejects_unknown_files(self):
@@ -86,8 +88,19 @@ class ChemicalReviewPluginTests(unittest.TestCase):
                 (plugin / relative).write_text("ok", encoding="utf-8")
             (plugin / "skills" / "chemical-review" / "SKILL.md").write_text("ok", encoding="utf-8")
             (plugin / "notes.txt").write_text("development note", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "outside release allowlist"):
+            with self.assertRaisesRegex(ValueError, "unexpected release files"):
                 list(release_files(plugin))
+
+    def test_canonical_projection_rejects_unknown_runtime_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            for relative in RUNTIME_SKILL_FILES:
+                target = source / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("ok", encoding="utf-8")
+            (source / "credentials.yaml").write_text("secret", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unexpected canonical runtime files"):
+                _files(source)
 
 
 if __name__ == "__main__":

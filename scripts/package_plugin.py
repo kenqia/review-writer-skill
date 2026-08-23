@@ -10,6 +10,21 @@ import json
 from pathlib import Path
 import zipfile
 
+try:
+    from .plugin_boundary import (
+        PLUGIN_ROOT_FILES,
+        RUNTIME_SKILL_FILES,
+        assert_exact_files,
+        relative_files,
+    )
+except ImportError:  # Direct execution: ``python scripts/package_plugin.py``.
+    from plugin_boundary import (
+        PLUGIN_ROOT_FILES,
+        RUNTIME_SKILL_FILES,
+        assert_exact_files,
+        relative_files,
+    )
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "chemical-review"
@@ -17,81 +32,19 @@ PLUGIN = ROOT / "plugins" / "chemical-review"
 # Keep the release boundary intentionally explicit.  Adding a new plugin
 # component should require an intentional change here rather than silently
 # shipping whatever happens to be present in the working tree.
-ALLOWED_FILES = frozenset({
-    ".codex-plugin/plugin.json",
-    "LICENSE",
-    "README.md",
-})
-ALLOWED_PREFIXES = ("skills/chemical-review/",)
-ALLOWED_SKILL_SUFFIXES = frozenset({".json", ".md", ".py", ".yaml", ".yml"})
-DENIED_COMPONENTS = frozenset({
-    ".git",
-    ".playwright-mcp",
-    "__pycache__",
-    "build",
-    "dist",
-    "node_modules",
-})
-DENIED_FILENAMES = frozenset({
-    ".env",
-    "CONTEXT.md",
-    "auth.json",
-    "cookies.json",
-    "credentials.json",
-    "secrets.json",
-    "session.json",
-})
-DENIED_SUFFIXES = frozenset({
-    ".db",
-    ".har",
-    ".key",
-    ".log",
-    ".p12",
-    ".pem",
-    ".pfx",
-    ".pyc",
-    ".pyo",
-    ".sqlite",
-    ".sqlite3",
-})
-
-
-def _is_allowed(relative: str) -> bool:
-    if relative in ALLOWED_FILES:
-        return True
-    return any(relative.startswith(prefix) for prefix in ALLOWED_PREFIXES) and (
-        Path(relative).suffix.lower() in ALLOWED_SKILL_SUFFIXES
-    )
-
-
-def _is_denied(relative_path: Path) -> bool:
-    if any(component in DENIED_COMPONENTS for component in relative_path.parts):
-        return True
-    if relative_path.name in DENIED_FILENAMES or relative_path.name.startswith(".env."):
-        return True
-    return relative_path.suffix.lower() in DENIED_SUFFIXES
-
-
+ALLOWED_FILES = PLUGIN_ROOT_FILES | frozenset(
+    f"skills/chemical-review/{relative}" for relative in RUNTIME_SKILL_FILES
+)
 def release_files(plugin: Path = PLUGIN) -> Iterator[tuple[Path, str]]:
     """Yield release files after enforcing the plugin package boundary.
 
     The function fails closed: unknown files, symlinks, and known secret or
     development artefacts are errors, not silently skipped entries.
     """
-    if not plugin.is_dir():
-        raise FileNotFoundError(f"plugin directory does not exist: {plugin}")
-    for path in sorted(plugin.rglob("*")):
-        relative_path = path.relative_to(plugin)
-        relative = relative_path.as_posix()
-        if path.is_symlink():
-            raise ValueError(f"symlinks are not allowed in release package: {relative}")
-        if not path.is_file():
-            continue
-        if _is_denied(relative_path):
-            raise ValueError(f"denied file in release package: {relative}")
-        if not _is_allowed(relative):
-            raise ValueError(f"file is outside release allowlist: {relative}")
-        yield path, relative
+    files = relative_files(plugin)
+    assert_exact_files(files, ALLOWED_FILES, label="release")
+    for relative in sorted(files):
+        yield files[relative], relative
 
 
 def main() -> int:

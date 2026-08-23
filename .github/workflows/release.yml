@@ -18,6 +18,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Codex CLI for plugin smoke
+        run: npm install --global @openai/codex@0.149.0
       - name: Install verification tools
         run: python -m pip install --disable-pip-version-check ruff==0.14.14
       - name: Require a tag from main
@@ -35,6 +40,12 @@ jobs:
           ruff check --target-version py311 .agents/skills/chemical-review plugins/chemical-review/skills/chemical-review scripts tests
       - name: Build plugin archive
         run: python scripts/package_plugin.py
+      - name: Run bundled cold-start smoke
+        run: python -B scripts/smoke_plugin.py
+      - name: Install and cold-start the plugin copy
+        run: python -B scripts/smoke_plugin_install.py
+      - name: Verify release checksum
+        run: (cd dist && sha256sum -c chemical-review-*.zip.sha256)
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

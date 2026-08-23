@@ -13,6 +13,11 @@ from pathlib import Path
 import shutil
 import sys
 
+try:
+    from .plugin_boundary import RUNTIME_SKILL_FILES, assert_exact_files, relative_files
+except ImportError:  # Direct execution: ``python scripts/build_plugin.py``.
+    from plugin_boundary import RUNTIME_SKILL_FILES, assert_exact_files, relative_files
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / ".agents" / "skills" / "chemical-review"
@@ -23,16 +28,15 @@ LICENSE_DEST = PLUGIN_ROOT / "LICENSE"
 
 
 def _files(root: Path) -> dict[Path, bytes]:
-    if not root.is_dir():
-        raise FileNotFoundError(f"skill directory does not exist: {root}")
+    paths = relative_files(root)
+    assert_exact_files(
+        paths,
+        RUNTIME_SKILL_FILES,
+        label="canonical runtime",
+    )
     result: dict[Path, bytes] = {}
-    for path in sorted(root.rglob("*")):
-        if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
-            continue
-        if path.is_symlink():
-            raise ValueError(f"symlinks are not allowed in the plugin skill: {path}")
-        if path.is_file():
-            result[path.relative_to(root)] = path.read_bytes()
+    for relative, path in paths.items():
+        result[Path(relative)] = path.read_bytes()
     if Path("SKILL.md") not in result:
         raise ValueError("canonical skill is missing SKILL.md")
     return result
