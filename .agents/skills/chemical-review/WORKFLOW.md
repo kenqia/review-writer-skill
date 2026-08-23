@@ -52,6 +52,16 @@ Research 使用随入口提供的可替换 adapter seam。默认能力路线按�
 
 首选解析路线是 MinerU，GROBID 补充结构/参考文献，Docling 作为 fallback；解析器输出只能作为后续阅读线索，不能替代原始 PDF 或人工科学判断。
 
+## Prototype and PRD execution contract
+
+Prototype 是化学综述的小样本试作，不是软件原型或语言质量评分。agent 从分层文献集选少量代表性论文，或提出一个小节并绑定该小节使用的 Research evidence IDs，主动尝试比较、解释、反驳和提出新问题；`PrototypeSubmission` 只是 agent 内部交接 seam，不要求研究者填写表单。
+
+1. 说明选择了哪些论文或小节，以及它们为何能暴露当前问题的价值与风险。完成标准：`prototype-result.md` 同时记录 `Selection` 和 `Representative rationale`；论文选择与小节绑定的 evidence IDs 都能在 `literature-set.md` 找到。
+2. 分开记录比较、解释、反驳和新研究问题，并说明这些分析相对摘要复述增加了什么研究价值；允许其中部分为空，不使用总分或字数替代判断。每个 `PrototypeSignal` 必须绑定所选 evidence IDs，comparison 至少跨两个 evidence records。完成标准：四个对应章节和 `Value argument` 都存在，至少一条 evidence-bound signal 有非空 statement 与 `Value beyond summary`，并有整体价值论证时才可标记 `VALUE_PRODUCING`；否则标记 `SUMMARY_ONLY`。这只是可供研究者审阅的交接证据，不证明模型综合在科学上正确。
+3. 报告主要风险并提出 Research 或 PRD 交接；研究者可以接受，也可以换样本继续探索。完成标准：状态保存 `prototype_handoff` 和理由，Research 资产不被 Prototype 重写。
+
+PRD 把已保存的意图、Research 与可选 Prototype 结果转成 `review-blueprint.md`。蓝图必须包含研究问题、核心论点候选、章节结构、叙事主线、比较维度、证据策略、预期贡献、期刊要求、风险和候选研究/写作单元。它保持 `ADAPTABLE` 与 `frozen: false`：新证据只修订受影响部分，并在 `Revision history` 保留原因和旧内容；不预先分配每句话或冻结论文清单。Prototype 重跑若发现 tracked section 被直接编辑，会把编辑原文保存在 `Preserved human edits and conflicts`；蓝图修订覆盖同一章节前，会在 revision history 明示并保留检测到的人类编辑。
+
 ## Intent confirmation
 
 当模型建议改变研究问题、核心论点方向、范围、排除项、目标读者或目标期刊时，the change requires **explicit confirmation**：

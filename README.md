@@ -24,4 +24,5 @@ The first product slice is the user-invoked `chemical-review` skill. It starts f
 - State templates: `.agents/skills/chemical-review/ASSET-TEMPLATES.md`
 - Minimal file orchestrator: `.agents/skills/chemical-review/orchestrator.py`
 - Research capability adapters: `.agents/skills/chemical-review/research.py`
+- Prototype and blueprint behavior: `.agents/skills/chemical-review/prototype.py`
 - Public tool-boundary notes: `docs/research/chemical-review-research-tools.md`

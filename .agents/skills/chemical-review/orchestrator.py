@@ -236,6 +236,91 @@ class ChemicalReviewOrchestrator:
         )
         return self.resume()
 
+    def run_prototype(self, submission) -> WorkflowResult:
+        """Run a small-sample review Prototype from saved Research assets."""
+
+        from prototype import PrototypeRunner, PrototypeSubmission
+
+        self._require_state("PROTOTYPE")
+        if not isinstance(submission, PrototypeSubmission):
+            raise TypeError("submission must be a PrototypeSubmission")
+        result = PrototypeRunner(self.project_root, today=self.today).run(submission)
+        self._update_state(
+            status="READY_FOR_NEXT_PHASE",
+            next_action=(
+                f"Review the Prototype decision and accept the {result.handoff} handoff, "
+                "or rerun Prototype with a different small sample."
+            ),
+            prototype_value_status=result.value_status,
+            prototype_handoff=result.handoff,
+            prototype_handoff_rationale=result.rationale,
+            human_action="NONE",
+            resume_note="The Prototype result is saved and can be rerun without changing Research assets.",
+        )
+        return self.resume()
+
+    def accept_prototype_handoff(self) -> WorkflowResult:
+        """Accept only the Prototype handoff saved by its latest run."""
+
+        state = self._require_state("PROTOTYPE")
+        if state.get("status") != "READY_FOR_NEXT_PHASE":
+            raise ValueError("Prototype has no ready handoff.")
+        target = state.get("prototype_handoff", "NONE")
+        if target not in {"RESEARCH", "PRD"}:
+            raise ValueError("The saved Prototype handoff must target RESEARCH or PRD.")
+        self._update_state(
+            phase=target,
+            status="ACTIVE",
+            next_action=(
+                "Continue adaptive Research from the Prototype risks."
+                if target == "RESEARCH"
+                else "Build an adaptable review blueprint from the saved intent, Research, and Prototype assets."
+            ),
+            human_action="NONE",
+            resume_note=f"The researcher accepted the Prototype handoff to {target}.",
+        )
+        return self.resume()
+
+    def build_review_blueprint(self, proposal) -> WorkflowResult:
+        """Build the first adaptable PRD blueprint without freezing prose or papers."""
+
+        from prototype import BlueprintBuilder, BlueprintProposal
+
+        self._require_state("PRD")
+        if not isinstance(proposal, BlueprintProposal):
+            raise TypeError("proposal must be a BlueprintProposal")
+        revision = BlueprintBuilder(self.project_root, today=self.today).build(proposal)
+        self._update_state(
+            status="READY_FOR_NEXT_PHASE",
+            next_action="Review and accept the adaptable blueprint, or revise it when evidence changes.",
+            blueprint_status="ADAPTABLE",
+            blueprint_revision=str(revision),
+            human_action="NONE",
+            resume_note="The blueprint is saved; Research and Prototype assets remain unchanged.",
+        )
+        return self.resume()
+
+    def revise_review_blueprint(
+        self, changes: Mapping[str, str | tuple[str, ...]], *, evidence_note: str
+    ) -> WorkflowResult:
+        """Revise selected blueprint sections and preserve a reasoned history."""
+
+        from prototype import BlueprintBuilder
+
+        self._require_state("PRD")
+        revision = BlueprintBuilder(self.project_root, today=self.today).revise(
+            changes, evidence_note=evidence_note
+        )
+        self._update_state(
+            status="READY_FOR_NEXT_PHASE",
+            next_action="Review and accept blueprint revision " + str(revision) + ", or continue adapting it.",
+            blueprint_status="ADAPTABLE",
+            blueprint_revision=str(revision),
+            human_action="NONE",
+            resume_note="Only the requested blueprint sections changed; prior revisions remain visible.",
+        )
+        return self.resume()
+
     def propose_intent_change(
         self, changes: Mapping[str, str], *, earliest_phase: str = "GRILL"
     ) -> WorkflowResult:

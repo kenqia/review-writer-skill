@@ -76,6 +76,11 @@ intent_confirmation: NOT_REQUIRED | REQUIRED | CONFIRMED
 human_action: NONE | REQUIRED
 research_handoff: NONE | PROTOTYPE | PRD
 research_handoff_rationale: <why this phase is proposed or blocked>
+prototype_value_status: SUMMARY_ONLY | VALUE_PRODUCING
+prototype_handoff: NONE | RESEARCH | PRD
+prototype_handoff_rationale: <why this phase is proposed>
+blueprint_status: NONE | ADAPTABLE
+blueprint_revision: 0
 updated: YYYY-MM-DD
 ---
 
@@ -145,5 +150,68 @@ updated: YYYY-MM-DD
 ## Background/definition
 ## Controversy
 ## Preserved human edits and conflicts
+## Human notes
+```
+
+## Prototype and PRD assets
+
+### `prototype-result.md`
+
+```md
+---
+kind: small-sample-review-prototype
+schema: 1
+prototype_revision: 0
+selection_mode: PAPERS | SUBSECTION
+value_status: SUMMARY_ONLY | VALUE_PRODUCING
+prototype_handoff: RESEARCH | PRD
+status: READY_FOR_NEXT_PHASE
+updated: YYYY-MM-DD
+---
+
+# Small-sample Review Prototype
+
+## Selection
+## Representative rationale
+## Prototype draft
+## Value argument
+## Comparisons
+<!-- 每条 signal 记录 statement、所选 Evidence IDs 和 Value beyond summary。 -->
+## Explanations
+## Rebuttals
+## New research questions
+## Major risks
+## Prototype decision
+## Revision history
+## Preserved human edits and conflicts
+## Human notes
+```
+
+### `review-blueprint.md`
+
+```md
+---
+kind: review-blueprint
+schema: 1
+blueprint_revision: 0
+blueprint_status: ADAPTABLE
+frozen: false
+updated: YYYY-MM-DD
+---
+
+# Review Blueprint
+
+## Research question
+## Core-claim candidates
+## Section structure
+## Narrative line
+## Comparison dimensions
+## Evidence strategy
+## Expected contribution
+## Target-journal requirements
+## Prototype basis
+## Known risks
+## Candidate research/writing units
+## Revision history
 ## Human notes
 ```
