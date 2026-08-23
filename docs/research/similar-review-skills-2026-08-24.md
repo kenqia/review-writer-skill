@@ -1,7 +1,7 @@
 # 类似综述制作 skill / literature-review workflow 调查
 
-调查日期：2026-08-24  
-调查对象：公开 GitHub 仓库中的官方 `README.md`、`SKILL.md`、源码和官方工具文档；以及本仓库与本机已有的 review-writing skills。  
+调查日期：2026-08-24
+调查对象：公开 GitHub 仓库中的官方 `README.md`、`SKILL.md`、源码和官方工具文档；以及本仓库与本机已有的 review-writing skills。
 证据边界：以下结论是对项目**公开设计和代码契约**的核对，不等于这些项目在 Chemical Review 上已经通过科学有效性、完整性或人工验收。没有运行外部项目，也没有把博客、排行榜或搜索摘要当作项目行为证据。
 
 ## 结论先行
@@ -218,4 +218,3 @@
 | L4 | [`review-section-drafting-figure-picking/SKILL.md`](/mnt/c/Users/26960/.codex/skills/review-section-drafting-figure-picking/SKILL.md) | paragraph/paper/figure anchors, inventory, citation callouts |
 | L5 | [`review-final-audit-release/SKILL.md`](/mnt/c/Users/26960/.codex/skills/review-final-audit-release/SKILL.md) | figure/citation/reference hard gates and source placeholder checks |
 | L6 | [`review-export-docx/SKILL.md`](/mnt/c/Users/26960/.codex/skills/review-export-docx/SKILL.md) | canonical Markdown→ACS-style DOCX mapping and image resolution |
-
