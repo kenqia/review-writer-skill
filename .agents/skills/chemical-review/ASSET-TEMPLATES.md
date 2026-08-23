@@ -84,6 +84,11 @@ blueprint_revision: 0
 unit_plan_status: NONE | READY_FOR_ACCEPTANCE | ACCEPTED
 unit_ready: <comma-separated unit IDs or NONE>
 content_revision: 0
+package_status: INTEGRITY_HOLD | REVISION_REQUIRED | SUBMISSION_CANDIDATE
+review_value_status: SUMMARY_ONLY | VALUE_PRODUCING
+review_integrity_status: CLEAR | HARD_STOP
+delivery_synchronization: SYNCHRONIZED
+delivery_source_digest: <sha256 of the reviewed content revision>
 updated: YYYY-MM-DD
 ---
 
@@ -305,4 +310,94 @@ updated: YYYY-MM-DD
 <!-- accepted unit IDs、deterministic merge key、blocks added；系统保存 history hash 用于安全恢复。 -->
 ## Preserved human edits and conflicts
 ## Human notes
+```
+
+## Review and delivery assets
+
+Review 的四个输出必须在同一次运行中由同一个 `review-content.md` 修订生成。它们不是四份可独立演化的正文。
+
+### `clean-manuscript.md`
+
+```md
+---
+kind: clean-review-manuscript
+schema: 1
+source_content_revision: 0
+source_digest: <shared sha256>
+delivery_status: INTEGRITY_HOLD | REVISION_REQUIRED | SUBMISSION_CANDIDATE
+updated: YYYY-MM-DD
+---
+
+# <review title or research question>
+
+<!-- 正常阅读和继续排版使用的干净正文；不包含内部 claim-level 标记。 -->
+```
+
+### `researcher-review.md`
+
+```md
+---
+kind: researcher-review-view
+schema: 1
+source_content_revision: 0
+source_digest: <shared sha256>
+delivery_status: INTEGRITY_HOLD | REVISION_REQUIRED | SUBMISSION_CANDIDATE
+updated: YYYY-MM-DD
+---
+
+# Researcher Review View: <review title or research question>
+
+<!-- 只对关键内容块显示 claim level、contribution、Evidence IDs 和 source units。 -->
+```
+
+### `review-report.md`
+
+```md
+---
+kind: multi-layer-review-report
+schema: 1
+package_status: INTEGRITY_HOLD | REVISION_REQUIRED | SUBMISSION_CANDIDATE
+value_status: SUMMARY_ONLY | VALUE_PRODUCING
+integrity_status: CLEAR | HARD_STOP
+synchronization_status: SYNCHRONIZED
+source_content_revision: 0
+source_digest: <shared sha256>
+updated: YYYY-MM-DD
+---
+
+# Multi-layer Review Report
+
+## Review value
+## Chemical reasoning
+## Scientific integrity
+## Intent alignment
+## Journal adaptation
+## Synchronization
+## Non-blocking uncertainties
+## Revision requests
+## Tool degradation or HUMAN_ACTION_REQUIRED
+## Human notes
+```
+
+### `submission-candidate-package.md`
+
+```md
+---
+kind: submission-candidate-package
+schema: 1
+package_status: INTEGRITY_HOLD | REVISION_REQUIRED | SUBMISSION_CANDIDATE
+source_content_revision: 0
+source_digest: <shared sha256>
+updated: YYYY-MM-DD
+---
+
+# Submission-candidate Package
+
+## Candidate state
+## Included assets
+## Target-journal state
+## Unresolved questions and next review inputs
+## Tool degradation or HUMAN_ACTION_REQUIRED
+## Boundary
+<!-- 明示不声明科学有效性或期刊接收，最终权限属于人类科学编辑。 -->
 ```

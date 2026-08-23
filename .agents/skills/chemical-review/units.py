@@ -28,6 +28,7 @@ CONTRIBUTION_TYPES = {
     "rebuttal",
     "trend",
     "hypothesis",
+    "new_research_question",
     "section_draft",
 }
 UNIT_STATUSES = {"PENDING", "READY", "BLOCKED", "COMPLETE", "MERGED"}

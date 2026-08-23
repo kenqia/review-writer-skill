@@ -505,6 +505,56 @@ class ChemicalReviewOrchestrator:
             )
         return self.resume()
 
+    def run_review(self, assessment, journal_adaptation) -> WorkflowResult:
+        """Generate synchronized delivery views and the multi-layer Review report."""
+
+        from review import JournalAdaptation, ReviewAssessment, ReviewRunner
+
+        state = self._require_state("IMPLEMENT")
+        if state.get("status") != "READY_FOR_NEXT_PHASE":
+            raise ValueError("Implement must finish its central merge before Review.")
+        if not isinstance(assessment, ReviewAssessment):
+            raise TypeError("assessment must be a ReviewAssessment")
+        if not isinstance(journal_adaptation, JournalAdaptation):
+            raise TypeError("journal_adaptation must be a JournalAdaptation")
+        original_state = self.state_path.read_text(encoding="utf-8")
+        runner = ReviewRunner(self.project_root, today=self.today)
+        result = runner.run(assessment, journal_adaptation)
+        if result.package_status == "INTEGRITY_HOLD":
+            status = "WAITING_FOR_HUMAN"
+            human_action = "REQUIRED"
+            next_action = "Resolve the scientific-integrity hard stops in review-report.md."
+        elif result.package_status == "REVISION_REQUIRED":
+            status = "READY_FOR_NEXT_PHASE"
+            human_action = "NONE"
+            next_action = "Route the actionable Review notes to the earliest affected phase."
+        else:
+            status = "CANDIDATE_READY"
+            human_action = "NONE"
+            next_action = "Human science editor reviews the synchronized submission-candidate package."
+        try:
+            self._update_state(
+                phase="REVIEW",
+                status=status,
+                next_action=next_action,
+                human_action=human_action,
+                package_status=result.package_status,
+                review_value_status=result.value_status,
+                review_integrity_status=result.integrity_status,
+                delivery_synchronization=result.synchronization_status,
+                delivery_source_digest=result.source_digest,
+                resume_note=(
+                    "Both delivery views and the Review report are saved from one content revision; "
+                    "they do not claim scientific validity or journal acceptance."
+                ),
+            )
+        except Exception:
+            for name in runner.OUTPUT_NAMES:
+                (self.project_root / name).unlink(missing_ok=True)
+            self._write(self.state_path, original_state)
+            raise
+        return self.resume()
+
     def propose_intent_change(
         self, changes: Mapping[str, str], *, earliest_phase: str = "GRILL"
     ) -> WorkflowResult:

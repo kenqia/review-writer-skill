@@ -72,7 +72,18 @@ Implement 遵守两个写入边界：
 2. claim block 区分 `SOURCE_FACT`、`MODEL_SYNTHESIS`、`MODEL_HYPOTHESIS`，并标明 comparison、explanation、rebuttal、trend、hypothesis 或 section draft 等贡献类型。所有已声明 evidence IDs 都必须存在于当前 `literature-set.md`，且 `SOURCE_FACT` 不能省略 evidence IDs；模型综合与假设仍保留其性质，不被伪装成文献事实。
 3. unit worker 不能直接修改 `review-content.md`。orchestrator 通过显式 central merge 接受结果；同一 section 的兼容贡献可以并存，只有 agent 判断为真实语义冲突的 section 才进入 `merge-review.md` 等待 resolution。每次成功 merge 在 hash-bound history 保存 accepted unit IDs 与确定性 merge key；若内容已写而 unit 状态写入失败，以同一集合或其中已记录的失败子集重试只完成状态收敛，不重复追加内容。直接编辑 Merge history 会被保留并进入 `HUMAN_ACTION_REQUIRED`，不能被当成恢复事实。完成标准：所有候选结果和冲突输入都保留，人类编辑被检测并作为下一次合并输入，不发生静默覆盖。
 
-`review-content.md` 是后续双轨交付的单一内容源，但 Issue #5 只生成带 claim-level 语义的内容块；干净稿、研究者版和多层 Review 由后续 Review 阶段生成。工程测试只验证依赖、资产和合并契约，不证明化学判断正确。
+`review-content.md` 是双轨交付的单一内容源；Implement 只生成带 claim-level 语义的内容块，Review 再从同一次内容修订生成干净稿和研究者版。工程测试只验证依赖、资产和合并契约，不证明化学判断正确。
+
+## Review and synchronized delivery contract
+
+Review 接受 agent 对化学推理、意图对齐、修订请求、普通不确定性和科学诚信问题的判断，以及从目标期刊当前官方指南整理的适配要求。它不把字符串扫描或固定总分冒充科学审稿，也不要求研究者填写内部 JSON。
+
+1. `review-content.md` 是唯一正文来源；同一次运行从同一 `content_revision` 和 `source_digest` 生成 `clean-manuscript.md` 与 `researcher-review.md`。完成标准：两个视图的正文主张一致并携带相同 digest；已有 Review 输出不会被静默覆盖。
+2. 干净稿不显示内部 claim-status 标记。研究者版只对关键内容块显示 `SOURCE_FACT`、`MODEL_SYNTHESIS` 或 `MODEL_HYPOTHESIS`，并保留 contribution、evidence IDs 和 source units；不要求逐句贴标签。
+3. 多层 Review 分别检查综合价值、化学推理、科学诚信、意图对齐、目标期刊适配和双视图同步。Review agent 必须显式给出 `VALUE_PRODUCING` 或 `SUMMARY_ONLY` 及其理由；comparison、explanation、rebuttal、trend、hypothesis 和 new research question 等 contribution 标签只是审查语境，不能自动证明正文超越摘要复述。`SUMMARY_ONLY` 触发可执行修订，不代表模型观点必然正确或错误。
+4. 默认 hard stop 只限四类：`FABRICATED_OR_UNFINDABLE_SOURCE`、`MISQUOTED_SOURCE_DATA`、`INVENTED_CHEMICAL_FACT`、`INFERENCE_AS_SOURCE_FACT`。每个 hard stop 必须给出正文与来源 locator；普通分歧、证据空白和不确定性记录为 `NON_BLOCKING` 提示。
+5. 目标期刊要求必须保留当前官方来源 locator，并按 `MET`、`GAP` 或 `NOT_APPLICABLE` 记录。期刊 gap 可使候选包进入 `REVISION_REQUIRED`，但任何状态都不是接收预测。
+6. Review 同时生成 `review-report.md` 与 `submission-candidate-package.md`。候选包状态只允许 `INTEGRITY_HOLD`、`REVISION_REQUIRED` 或 `SUBMISSION_CANDIDATE`；即使是 `SUBMISSION_CANDIDATE`，也只表示可交给人类科学编辑继续核验，不声明科学有效性或期刊接收。
 
 ## Intent confirmation
 
