@@ -20,7 +20,7 @@ import shutil
 import subprocess
 from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 
@@ -36,6 +36,10 @@ _SENSITIVE_QUERY_RE = re.compile(
     re.I,
 )
 _SENSITIVE_HEADER_RE = re.compile(r"(\b(?:authorization|x-api-key)\s*:\s*(?:bearer\s+)?)[^\s,;]+", re.I)
+_SENSITIVE_URL_KEYS = {
+    "api_key", "apikey", "access_token", "auth", "authorization", "credential",
+    "key", "secret", "sig", "signature", "token", "x-api-key", "x-amz-credential", "x-amz-signature",
+}
 
 
 class ProviderUnavailable(RuntimeError):
@@ -458,7 +462,7 @@ class ResearchStage:
                     failure = _safe_error(str(exc))
                     research_gap = True
                     record.update({"full_text": "WAITING_FOR_USER", "failure": failure})
-                    if _download_priority(paper) > 0:
+                    if _download_priority(paper) > 0 and self._download_request(paper, record, reason=failure).get("url"):
                         pending_requests.append(self._download_request(paper, record, reason=failure))
                     else:
                         research_gap = True
@@ -466,7 +470,11 @@ class ResearchStage:
                 failure = "legal user download required" if paper.full_text_url else "no legal full-text URL was located"
                 record.update({"full_text": "WAITING_FOR_USER" if paper.full_text_url else "MISSING", "failure": failure})
                 if paper.full_text_url and _download_priority(paper) > 0:
-                    pending_requests.append(self._download_request(paper, record, reason=failure))
+                    request = self._download_request(paper, record, reason=failure)
+                    if request.get("url"):
+                        pending_requests.append(request)
+                    else:
+                        research_gap = True
                 else:
                     research_gap = True
         pending_requests.sort(key=lambda item: (-int(item["priority_score"]), item["source_id"]))
@@ -615,7 +623,8 @@ class ResearchStage:
             values = dict(record)
             lines = ["---", "kind: research-source", "schema: 2", "---", "", f"# {values.get('title', paper_id)}", ""]
             for key in ("source_id", "identifier", "doi", "title", "year", "provider", "full_text_url", "access_basis", "priority", "claim_relevance", "non_substitutability", "local_path", "digest", "downloaded_at", "full_text", "parser", "failure"):
-                lines.append(f"{key}: {values.get(key, '')}")
+                value = _persisted_url(str(values.get(key, ""))) if key == "full_text_url" else values.get(key, "")
+                lines.append(f"{key}: {value}")
             lines.append("locators: " + ";".join(values.get("locators", [])))
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         registry_lines = [
@@ -624,7 +633,11 @@ class ResearchStage:
             "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
         for record in records.values():
-            registry_lines.append("| " + " | ".join(str(record.get(key, "none") or "none").replace("|", "\\|") for key in ("source_id", "identifier", "title", "provider", "full_text_url", "access_basis", "priority", "full_text", "parser", "locators", "digest", "downloaded_at", "claim_relevance", "non_substitutability", "failure")) + " |")
+            registry_values = []
+            for key in ("source_id", "identifier", "title", "provider", "full_text_url", "access_basis", "priority", "full_text", "parser", "locators", "digest", "downloaded_at", "claim_relevance", "non_substitutability", "failure"):
+                value = _persisted_url(str(record.get(key, ""))) if key == "full_text_url" else record.get(key, "none")
+                registry_values.append(str(value or "none").replace("|", "\\|"))
+            registry_lines.append("| " + " | ".join(registry_values) + " |")
         (self.root / "source-registry.md").write_text("\n".join(registry_lines) + "\n", encoding="utf-8")
 
     def _find_inbox_pdf(self, paper: Paper) -> Path | None:
@@ -699,7 +712,7 @@ class ResearchStage:
             "source_id": str(record["source_id"]),
             "identity": paper.identifier,
             "title": paper.title,
-            "url": paper.full_text_url,
+            "url": _persisted_url(paper.full_text_url),
             "access_basis": paper.access_basis or "AUTHORIZATION_UNCLEAR",
             "suggested_filename": _source_id(paper.identifier) + ".pdf",
             "target_inbox": "research/inbox/authorized-pdfs/",
@@ -853,6 +866,20 @@ def _safe_error(value: str, *, secrets: Sequence[str] = ()) -> str:
     for secret in secrets:
         redacted = redacted.replace(secret, "[REDACTED]")
     return redacted[:500]
+
+
+def _persisted_url(value: str) -> str:
+    """Return a URL safe for Markdown/cache, withholding credential-bearing routes."""
+    if not value.strip():
+        return ""
+    try:
+        parsed = urlsplit(value)
+        query = parse_qsl(parsed.query, keep_blank_values=True)
+    except ValueError:
+        return ""
+    if any(key.lower() in _SENSITIVE_URL_KEYS for key, _ in query):
+        return ""
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
 
 
 def _load_env_file(path: Path) -> None:

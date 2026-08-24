@@ -209,6 +209,14 @@ class V2ProductTests(unittest.TestCase):
             direct_adapter.locate("10.1/x")
         self.assertNotIn("DIRECTSECRET", direct_adapter.last_error)
         self.assertIn("[REDACTED]", direct_adapter.last_error)
+        self.assertEqual(
+            research._persisted_url("https://oa.example/paper.pdf?access_token=URLSECRET&download=1"),
+            "",
+        )
+        self.assertEqual(
+            research._persisted_url("https://oa.example/paper.pdf?download=1"),
+            "https://oa.example/paper.pdf?download=1",
+        )
 
     def test_download_queue_is_evidence_selected_and_not_truncated_at_a_fixed_count(self):
         research = load_module("v2_priority_queue", V2_SKILLS["chemical-review-research"] / "research.py")
