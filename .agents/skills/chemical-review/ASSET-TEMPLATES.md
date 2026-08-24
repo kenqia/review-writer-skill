@@ -250,7 +250,7 @@ updated: YYYY-MM-DD
 
 ### `run-budget.json` / `run-ledger.md`
 
-`run-budget.json` 是机器可读 ledger；`run-ledger.md` 是其人类可读投影。至少记录 query、request、input/output token estimate、concurrency、retry、cache hit、parser pages/chunks、run id 和预算上限。冷启动从项目资产恢复，不重复传输未变化内容。
+`run-budget.json` 是机器可读 ledger；`run-ledger.md` 是其人类可读投影。至少记录 query、request、input/output token estimate、concurrency、retry、cache hit、parser pages/chunks、run id 和预算上限。冷启动从项目资产恢复，不重复传输未变化内容。每次 cache 命中还在 JSON `events` 中记录稳定 `artifact_id`、provider、来源和 `REUSED`/预算拒绝结果，使“命中缓存”与“本轮实际采用资产”可以区分。
 
 ### `research-setup-wizard.md`
 

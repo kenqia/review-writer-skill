@@ -1,8 +1,11 @@
 import json
+import hashlib
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+
+from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,10 +13,12 @@ SKILL_DIR = ROOT / ".agents" / "skills" / "chemical-review"
 sys.path.insert(0, str(SKILL_DIR))
 
 from orchestrator import ChemicalReviewOrchestrator  # noqa: E402
+from delivery import FigureInventory  # noqa: E402
 import research as _research  # noqa: E402
 
 FullTextResult = _research.FullTextResult
 PaperRecord = _research.PaperRecord
+ParsedMedia = _research.ParsedMedia
 ResearchConfig = _research.ResearchConfig
 
 
@@ -69,6 +74,30 @@ class _LocalParser:
             self.name,
             sections=("Results",),
             locators=("p. 1",),
+        )
+
+
+class _MediaParser:
+    name = "MinerU"
+
+    def __init__(self, source_path):
+        self.source_path = source_path
+
+    def parse(self, full_text):
+        return _research.ParsedDocument(
+            full_text.paper_id,
+            self.name,
+            sections=("Results",),
+            locators=("p. 2",),
+            media=(
+                ParsedMedia(
+                    asset_id="fig-research-1",
+                    asset_type="FIGURE",
+                    source_path=str(self.source_path),
+                    locator="p. 2, Figure 1",
+                    caption="Source-bound research figure.",
+                ),
+            ),
         )
 
 
@@ -250,6 +279,41 @@ class ResearchDoctorContractTests(unittest.TestCase):
             ledger = Path(project_dir, "run-budget.json").read_text(encoding="utf-8")
             self.assertIn('"cache_hits":', ledger)
             self.assertRegex(ledger, r'"cache_hits":\s*[1-9]')
+            events = json.loads(ledger)["events"]
+            reused = [event for event in events if event.get("outcome") == "REUSED"]
+            self.assertTrue(reused)
+            self.assertTrue(all(len(event["artifact_id"]) == 64 for event in reused))
+
+    def test_parsed_media_is_persisted_with_source_and_asset_digests(self):
+        with TemporaryDirectory() as project_dir:
+            root = Path(project_dir)
+            image_path = root / "parsed-figure.png"
+            Image.new("RGB", (64, 48), "white").save(image_path)
+            orchestrator = self._ready(project_dir)
+
+            orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(_Discovery((PaperRecord("p-media", "Media paper"),)),),
+                    full_text=(_FullText(),),
+                    parsers=(_MediaParser(image_path),),
+                )
+            )
+
+            inventory = FigureInventory.load(root)
+            asset = inventory.assets["fig-research-1"]
+            self.assertEqual(asset.status, "SOURCE")
+            self.assertEqual(asset.extraction_status, "VERIFIED")
+            self.assertEqual(
+                asset.sha256,
+                hashlib.sha256(image_path.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                asset.source_digest,
+                hashlib.sha256(b"authorized text").hexdigest(),
+            )
+            registry = (root / "source-registry.md").read_text(encoding="utf-8")
+            self.assertIn(asset.source_id, registry)
+            self.assertIn(asset.asset_id, registry)
 
     def test_output_budget_rejection_is_not_cached_as_a_free_result(self):
         with TemporaryDirectory() as project_dir:

@@ -1379,7 +1379,6 @@ class ResearchRunner:
                 if cached is not None:
                     found = tuple(_paper_from_cache(item) for item in cached)
                     _ledger_increment(ledger, "cache_hits")
-                    _ledger_event(ledger, "discovery-cache-hit", path=path, provider=name)
                     cached_output_tokens = sum(
                         _estimate_tokens(paper.title + " " + paper.abstract)
                         for paper in found
@@ -1393,8 +1392,24 @@ class ResearchRunner:
                             "(max_output_tokens)."
                         )
                         found = ()
+                        _ledger_event(
+                            ledger,
+                            "discovery-cache-hit",
+                            artifact_id=cache_key,
+                            path=path,
+                            provider=name,
+                            outcome="BUDGET_REJECTED",
+                        )
                     else:
                         _ledger_increment(ledger, "output_tokens", cached_output_tokens)
+                        _ledger_event(
+                            ledger,
+                            "discovery-cache-hit",
+                            artifact_id=cache_key,
+                            path=path,
+                            provider=name,
+                            outcome="REUSED",
+                        )
                 else:
                     if _budget_exhausted(ledger, "request_count", budget.max_requests) or _retry_budget_exhausted(
                         ledger, budget.max_retries
@@ -1521,8 +1536,24 @@ class ResearchRunner:
                             "Run budget stopped cached adaptive discovery (max_output_tokens)."
                         )
                         found = ()
+                        _ledger_event(
+                            ledger,
+                            "discovery-cache-hit",
+                            artifact_id=cache_key,
+                            path="adaptive follow-up",
+                            provider=name,
+                            outcome="BUDGET_REJECTED",
+                        )
                     else:
                         _ledger_increment(ledger, "output_tokens", cached_output_tokens)
+                        _ledger_event(
+                            ledger,
+                            "discovery-cache-hit",
+                            artifact_id=cache_key,
+                            path="adaptive follow-up",
+                            provider=name,
+                            outcome="REUSED",
+                        )
                 else:
                     if _budget_exhausted(ledger, "request_count", budget.max_requests) or _retry_budget_exhausted(
                         ledger, budget.max_retries
@@ -1692,6 +1723,14 @@ class ResearchRunner:
                         )
                         continue
                     _ledger_increment(ledger, "output_tokens", cached_tokens)
+                    _ledger_event(
+                        ledger,
+                        "full-text-cache-hit",
+                        artifact_id=cache_key,
+                        provider=name,
+                        source_id=paper.identifier,
+                        outcome="REUSED",
+                    )
                 else:
                     if _budget_exhausted(ledger, "request_count", budget.max_requests) or _retry_budget_exhausted(
                         ledger, budget.max_retries
@@ -1836,6 +1875,14 @@ class ResearchRunner:
                             )
                         _ledger_increment(ledger, "parser_pages", cached_pages)
                         _ledger_increment(ledger, "input_tokens", cached_input_tokens)
+                        _ledger_event(
+                            ledger,
+                            "parsed-cache-hit",
+                            artifact_id=cache_key,
+                            provider=name,
+                            source_id=full_text.paper_id,
+                            outcome="REUSED",
+                        )
                         parsed.append(document)
                         parsed_for_paper = True
                         if name == "MinerU":
