@@ -354,6 +354,11 @@ class IntentStage:
         if not isinstance(raw, Mapping) or not isinstance(raw.get("findings"), (list, tuple)):
             return False, [], "report must contain a findings list"
         findings: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        module_aliases = {
+            "evidence_matrix_implications": "evidence_matrix",
+            "journal_fit_contribution": "journal_fit",
+        }
         for index, raw_finding in enumerate(raw["findings"]):
             if not isinstance(raw_finding, Mapping):
                 return False, [], f"finding {index + 1} is not an object"
@@ -361,9 +366,16 @@ class IntentStage:
             missing = [field for field in EXPERT_FINDING_FIELDS if field not in finding]
             if missing:
                 return False, [], f"finding {index + 1} missing: {', '.join(missing)}"
+            finding_id = str(finding["id"]).strip()
+            if not finding_id:
+                return False, [], f"finding {index + 1} has an empty id"
+            if finding_id in seen_ids:
+                return False, [], f"finding {index + 1} duplicates id {finding_id}"
+            seen_ids.add(finding_id)
             module = str(finding["module"]).strip().lower().replace(" ", "_").replace("-", "_")
+            module = module_aliases.get(module, module)
             if module not in EXPERT_MODULES:
-                module = "evidence" if module in {"evidence_matrix_implications", "evidence_standards"} else "scope"
+                return False, [], f"finding {index + 1} has unknown module {module}"
             finding["module"] = module
             finding["unresolved_questions"] = [str(item) for item in (finding["unresolved_questions"] if isinstance(finding["unresolved_questions"], (list, tuple)) else [finding["unresolved_questions"]]) if str(item).strip()]
             finding.setdefault("before", "")
@@ -527,6 +539,8 @@ def main() -> int:
     expert.add_argument("--choice", choices=("yes", "no", "skip", "defer"), required=True)
     expert.add_argument("--fixture-json", type=Path)
     expert.add_argument("--material", type=Path, action="append", default=[])
+    expert.add_argument("--timeout-seconds", type=float, default=60.0)
+    expert.add_argument("--budget", type=int, default=1)
     expert_decision = sub.add_parser("expert-decision")
     expert_decision.add_argument("--project", type=Path, required=True)
     expert_decision.add_argument("--decision", choices=("accept-selected", "reject-all", "defer"), required=True)
@@ -548,7 +562,13 @@ def main() -> int:
             def fixture_reviewer(_payload: Mapping[str, Any]) -> Any:
                 return fixture
             reviewer = fixture_reviewer
-        result = stage.optional_expert_review(args.choice, reviewer=reviewer, materials=tuple(args.material))
+        result = stage.optional_expert_review(
+            args.choice,
+            reviewer=reviewer,
+            materials=tuple(args.material),
+            timeout_seconds=args.timeout_seconds,
+            budget=args.budget,
+        )
         print(json.dumps({"decision": result.decision, "success": result.success, "findings": len(result.findings), "reason": result.reason}, ensure_ascii=False))
         return 0 if result.success or result.decision in {"SKIPPED", "DEFERRED"} else 2
     else:
