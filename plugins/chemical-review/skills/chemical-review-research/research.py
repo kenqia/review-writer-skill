@@ -200,6 +200,7 @@ class _Adapter:
                 response = self.transport.request(method, url, headers=headers or {"Accept": "application/json"}, body=body, timeout=self.settings.timeout)
                 self.last_status = "REACHABLE"
                 if response.status >= 400:
+                    self.last_status = "FAILED"
                     self.last_error = _safe_error(
                         f"{method} {url} -> provider returned HTTP {response.status}",
                         secrets=self._credential_values(),
@@ -207,6 +208,7 @@ class _Adapter:
                 return response
             except Exception as exc:  # adapters expose honest degradation, never a false success
                 last = exc
+                self.last_status = "FAILED"
                 self.last_error = _safe_error(str(exc), secrets=self._credential_values())
         raise ProviderUnavailable(f"{self.name} request failed after configured retries") from last
 
