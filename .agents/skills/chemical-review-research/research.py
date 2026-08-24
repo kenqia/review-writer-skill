@@ -1154,7 +1154,13 @@ class ResearchStage:
             source["evidence_fields"] = evidence
             source["locators"] = list(locators)
             manifest.setdefault("evidence_matrix", {}).setdefault("evidence_levels", {})[str(source.get("source_id"))] = "VERIFIED"
-            records = self._load_records()
+            # The manifest is the authority; projections must never be read
+            # back as a second source of truth during promotion.
+            records = {
+                str(item.get("identifier")): dict(item)
+                for item in manifest.get("sources", ())
+                if isinstance(item, Mapping) and item.get("identifier")
+            }
             records[str(source.get("identifier"))] = source
             manifest["coverage"] = self._coverage(manifest.get("candidates", ()), records, (), False)
             self._write_manifest_file(manifest)
