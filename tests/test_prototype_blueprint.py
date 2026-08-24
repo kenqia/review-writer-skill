@@ -279,6 +279,15 @@ class PrototypeBlueprintTests(unittest.TestCase):
                     )
                 )
 
+            receipt = Path(project_dir, "workflow-failure-receipt.md")
+            self.assertTrue(receipt.is_file())
+            self.assertIn("status: BLOCKED", receipt.read_text(encoding="utf-8"))
+            self.assertIn("PROTOTYPE", receipt.read_text(encoding="utf-8"))
+            resumed = ChemicalReviewOrchestrator(project_dir).resume()
+            self.assertEqual(resumed.status, "WAITING_FOR_HUMAN")
+            self.assertEqual(resumed.human_action, "REQUIRED")
+            self.assertIn("HUMAN_ACTION_REQUIRED", resumed.next_action)
+
     def test_blank_paper_id_is_not_a_research_selection(self):
         with TemporaryDirectory() as project_dir:
             orchestrator = self._prototype_ready_project(project_dir)
@@ -451,6 +460,9 @@ class PrototypeBlueprintTests(unittest.TestCase):
                 "exclusions": "Palladium-only systems",
                 "audience": "Organometallic chemistry researchers",
                 "contribution": "Reconcile apparently conflicting mechanistic evidence",
+                "researcher_context": "No prior context beyond the stated nickel coupling scope.",
+                "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                "boundary_scenarios": "Treat unmatched ligands, substrates, and locators as gaps.",
             }
         )
         orchestrator.confirm_current_intent()

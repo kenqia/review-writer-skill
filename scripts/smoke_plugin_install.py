@@ -12,6 +12,8 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 
+from plugin_boundary import resolve_plugin_skill
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKETPLACE = "review-writer-skill"
@@ -52,7 +54,10 @@ def main() -> int:
         )["version"]
         if payload["version"] != expected_version or not installed_path.is_dir():
             raise RuntimeError(f"unexpected installed plugin payload: {payload}")
-        skill = installed_path / "skills" / PLUGIN
+        resolution = resolve_plugin_skill(installed_path)
+        if resolution.version != expected_version:
+            raise RuntimeError(f"installed bundled skill version mismatch: {resolution}")
+        skill = resolution.skill_path
         sys.path.insert(0, str(skill))
         from orchestrator import ChemicalReviewOrchestrator  # noqa: E402
 

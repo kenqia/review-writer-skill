@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date
+import json
 from pathlib import Path
 import re
 import shutil
@@ -18,7 +19,9 @@ from typing import Mapping, Sequence
 
 PHASES = ("GRILL", "RESEARCH", "PROTOTYPE", "PRD", "ISSUES", "IMPLEMENT", "REVIEW")
 STATUSES = ("ACTIVE", "WAITING_FOR_HUMAN", "READY_FOR_NEXT_PHASE", "CANDIDATE_READY")
-EXECUTION_MODES = ("continuous", "acceptance")
+EXECUTION_MODES = ("canonical",)
+LEGACY_EXECUTION_MODES = {"continuous": "canonical", "acceptance": "canonical"}
+ORCHESTRATION_EVENTS = {"delegate", "wait", "retry", "restart", "handoff"}
 
 _INTENT_HEADINGS = {
     "research_question": "Research question",
@@ -89,7 +92,7 @@ class WorkflowResult:
     human_action: str
     intent_revision: int
     assets: Mapping[str, str]
-    execution_mode: str = "acceptance"
+    execution_mode: str = "canonical"
     frontier_questions: tuple[str, ...] = ()
     known_facts: tuple[str, ...] = ()
 
@@ -120,6 +123,181 @@ class ChemicalReviewOrchestrator:
     def domain_path(self) -> Path:
         return self.project_root / "domain-profile.md"
 
+    @property
+    def runtime_binding_path(self) -> Path:
+        return self.project_root / "runtime-binding.md"
+
+    @property
+    def run_ledger_path(self) -> Path:
+        return self.project_root / "run-budget.json"
+
+    def _runtime_identity(self) -> dict[str, str]:
+        skill_path = Path(__file__).resolve().parent
+        for parent in skill_path.parents:
+            manifest_path = parent / ".codex-plugin" / "plugin.json"
+            if not manifest_path.is_file():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise RuntimeError(
+                    "HUMAN_ACTION_REQUIRED: Chemical Review plugin manifest is unreadable; "
+                    "reinstall the bundled plugin before resuming."
+                ) from error
+            plugin_id = str(manifest.get("name", "")).strip()
+            version = str(manifest.get("version", "")).strip()
+            skills_root = str(manifest.get("skills", "")).strip()
+            declared = (parent / skills_root / plugin_id).resolve()
+            if plugin_id != "chemical-review" or not version or declared != skill_path:
+                raise RuntimeError(
+                    "HUMAN_ACTION_REQUIRED: Chemical Review bundled skill does not "
+                    "match its plugin manifest; reinstall or verify the installed plugin."
+                )
+            return {
+                "plugin_id": plugin_id,
+                "plugin_version": version,
+                "resolved_skill_path": str(skill_path),
+                "binding_status": "BUNDLED_PLUGIN",
+                "fallback_reason": "NONE",
+            }
+        return {
+            "plugin_id": "chemical-review",
+            "plugin_version": "NOT_APPLICABLE",
+            "resolved_skill_path": str(skill_path),
+            "binding_status": "CANONICAL_SOURCE",
+            "fallback_reason": "NONE",
+        }
+
+    def _ensure_runtime_binding(self) -> None:
+        identity = self._runtime_identity()
+        if self.runtime_binding_path.exists():
+            existing, _ = _split_frontmatter(
+                self.runtime_binding_path.read_text(encoding="utf-8")
+            )
+            keys = (
+                "plugin_id",
+                "plugin_version",
+                "resolved_skill_path",
+                "binding_status",
+            )
+            if any(existing.get(key) != identity[key] for key in keys):
+                raise RuntimeError(
+                    "Chemical Review runtime binding changed; HUMAN_ACTION_REQUIRED: "
+                    "verify the installed bundled skill before resuming."
+                )
+            return
+        receipt = _document(
+            {
+                "kind": "chemical-review-runtime-binding",
+                "schema": "1",
+                **identity,
+                "updated": self.today.isoformat(),
+            },
+            "# Chemical Review Runtime Binding\n\n"
+            "This receipt identifies the skill implementation used for this project. "
+            "It contains no credentials or private conversation content.\n\n"
+            "## Resolution\n"
+            f"- Plugin: {identity['plugin_id']}\n"
+            f"- Version: {identity['plugin_version']}\n"
+            f"- Skill path: {identity['resolved_skill_path']}\n"
+            f"- Status: {identity['binding_status']}\n"
+            f"- Fallback reason: {identity['fallback_reason']}\n",
+        )
+        self._write(self.runtime_binding_path, receipt)
+
+    def record_user_pause(self, *, phase: str) -> None:
+        """Record one user-visible decision pause without storing its content."""
+
+        if phase not in PHASES:
+            raise ValueError(f"Unknown workflow phase for telemetry: {phase}")
+        ledger = self._load_run_ledger()
+        ledger["user_pause_count"] = int(ledger.get("user_pause_count", 0)) + 1
+        self._persist_run_ledger(ledger)
+
+    def record_orchestration_event(self, event: str, *, phase: str) -> None:
+        """Record one non-sensitive internal orchestration event."""
+
+        if event not in ORCHESTRATION_EVENTS:
+            raise ValueError(
+                "orchestration event must be one of: "
+                + ", ".join(sorted(ORCHESTRATION_EVENTS))
+            )
+        if phase not in PHASES:
+            raise ValueError(f"Unknown workflow phase for telemetry: {phase}")
+        ledger = self._load_run_ledger()
+        events = ledger.setdefault("orchestration_events", [])
+        if not isinstance(events, list):
+            events = []
+            ledger["orchestration_events"] = events
+        events.append({"event": event, "phase": phase})
+        ledger["orchestration_event_count"] = int(
+            ledger.get("orchestration_event_count", 0)
+        ) + 1
+        self._persist_run_ledger(ledger)
+
+    def _load_run_ledger(self) -> dict[str, object]:
+        if self.run_ledger_path.is_file():
+            try:
+                loaded = json.loads(self.run_ledger_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                loaded = None
+            if isinstance(loaded, dict) and loaded.get("schema") == 1:
+                return loaded
+        return {
+            "schema": 1,
+            "query_count": 0,
+            "request_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "concurrency": 1,
+            "retries": 0,
+            "cache_hits": 0,
+            "parser_pages": 0,
+            "parser_chunks": 0,
+            "runs_started": 0,
+            "last_run_id": "",
+            "user_pause_count": 0,
+            "orchestration_event_count": 0,
+            "orchestration_events": [],
+            "budget": {},
+            "events": [],
+        }
+
+    def _persist_run_ledger(self, ledger: Mapping[str, object]) -> None:
+        self._write(
+            self.run_ledger_path,
+            json.dumps(ledger, ensure_ascii=False, indent=2, sort_keys=True),
+        )
+        counters = (
+            "query_count",
+            "request_count",
+            "input_tokens",
+            "output_tokens",
+            "concurrency",
+            "retries",
+            "cache_hits",
+            "parser_pages",
+            "parser_chunks",
+            "user_pause_count",
+            "orchestration_event_count",
+            "runs_started",
+            "last_run_id",
+        )
+        lines = [
+            "# Research Run Ledger",
+            "",
+            "The JSON run budget is the machine-readable ledger; this is its human-readable projection.",
+            "",
+            *(f"- {key}: {ledger.get(key, 0)}" for key in counters),
+            "",
+            "## Budget",
+            "",
+            "```json",
+            json.dumps(ledger.get("budget", {}), ensure_ascii=False, sort_keys=True),
+            "```",
+        ]
+        self._write(self.project_root / "run-ledger.md", "\n".join(lines))
+
     def start(
         self,
         topic: str,
@@ -131,16 +309,20 @@ class ChemicalReviewOrchestrator:
     ) -> WorkflowResult:
         """Start from a topic, or resume if this project already has state."""
 
-        if mode is not None and execution_mode is not None and mode != execution_mode:
+        normalized_mode = self._normalize_execution_mode(mode)
+        normalized_execution_mode = self._normalize_execution_mode(execution_mode)
+        if (
+            normalized_mode is not None
+            and normalized_execution_mode is not None
+            and normalized_mode != normalized_execution_mode
+        ):
             raise ValueError("mode and execution_mode must agree when both are provided.")
-        selected_mode = self._normalize_execution_mode(
-            execution_mode if execution_mode is not None else mode
-        )
+        selected_mode = normalized_execution_mode or normalized_mode
 
         supplied_materials = materials if materials is not None else known_documents
         if self.state_path.exists():
             if selected_mode is not None:
-                current = self._require_state().get("execution_mode", "acceptance")
+                current = self._execution_mode()
                 if current != selected_mode:
                     raise ValueError(
                         "The project execution mode is already persisted as " + current
@@ -152,9 +334,10 @@ class ChemicalReviewOrchestrator:
         if not topic:
             raise ValueError("A chemistry review topic or research idea is required.")
 
+        self._ensure_runtime_binding()
         self._write_initial_assets(
             topic,
-            execution_mode=selected_mode or "acceptance",
+            execution_mode=selected_mode or "canonical",
             materials=supplied_materials,
         )
         return self.resume()
@@ -164,6 +347,7 @@ class ChemicalReviewOrchestrator:
 
         if not self.state_path.exists():
             raise FileNotFoundError(f"No workflow state at {self.state_path}")
+        self._ensure_runtime_binding()
         for path in (self.intent_path, self.domain_path):
             if not path.exists():
                 raise FileNotFoundError(f"Workflow state exists but asset is missing: {path}")
@@ -183,6 +367,12 @@ class ChemicalReviewOrchestrator:
             raise ValueError(f"Unknown workflow phase: {phase}")
         if status not in STATUSES:
             raise ValueError(f"Unknown workflow status: {status}")
+        raw_mode = metadata.get("execution_mode", "canonical")
+        canonical_mode = self._normalize_execution_mode(raw_mode) or "canonical"
+        if raw_mode != canonical_mode:
+            metadata["legacy_execution_mode"] = raw_mode
+            metadata["execution_mode"] = canonical_mode
+            self._write(self.state_path, _document(metadata, _split_frontmatter(self.state_path.read_text(encoding="utf-8"))[1]))
         return WorkflowResult(
             phase=phase,
             status=status,
@@ -191,7 +381,7 @@ class ChemicalReviewOrchestrator:
             human_action=metadata.get("human_action", "NONE"),
             intent_revision=int(metadata.get("intent_revision", "0")),
             assets=metadata,
-            execution_mode=metadata.get("execution_mode", "acceptance"),
+            execution_mode=canonical_mode,
             frontier_questions=tuple(self._frontier_questions_from_assets()),
             known_facts=tuple(self._known_facts_from_intent()),
         )
@@ -206,7 +396,8 @@ class ChemicalReviewOrchestrator:
         intent = self._apply_intent_answers(intent, normalized)
         intent = self._apply_journal_answers(intent, normalized)
         domain = self._apply_domain_answers(domain, normalized)
-        missing = self._missing_intent_fields(intent)
+        intent = self._record_answer_provenance(intent, normalized)
+        missing = self._missing_grill_fields(intent, domain)
         open_questions = "None recorded." if not missing else "\n".join(f"- {item}" for item in missing)
         intent = _set_section(intent, "Open questions", open_questions)
         self._write(self.intent_path, intent)
@@ -226,7 +417,9 @@ class ChemicalReviewOrchestrator:
         if missing:
             self._update_state(
                 status="ACTIVE",
-                next_action="continue Grill by answering the open questions in review-intent.md.",
+                next_action=(
+                    "Continue Grill by answering: " + ", ".join(missing) + "."
+                ),
                 intent_confirmation="REQUIRED",
                 human_action="NONE",
                 open_questions=open_questions,
@@ -273,11 +466,17 @@ class ChemicalReviewOrchestrator:
         state = self._require_state("GRILL")
         if state.get("status") != "READY_FOR_NEXT_PHASE":
             raise ValueError("The Grill contract is incomplete; answer its open questions first.")
+        intent = self.intent_path.read_text(encoding="utf-8")
+        domain = self.domain_path.read_text(encoding="utf-8")
+        missing = self._missing_grill_fields(intent, domain)
+        if missing:
+            raise ValueError(
+                "The Grill contract is incomplete; answer: " + ", ".join(missing)
+            )
         if state.get("journal_status") == "SELECTED" and state.get("journal_guide_status") != "FETCHED":
             raise ValueError(
                 "The selected journal's current official guide must be fetched before Research."
             )
-        intent = self.intent_path.read_text(encoding="utf-8")
         intent = _replace_frontmatter(intent, {"confirmation": "CONFIRMED"})
         self._write(self.intent_path, intent)
         self._update_state(
@@ -289,6 +488,7 @@ class ChemicalReviewOrchestrator:
             human_action="NONE",
             resume_note="Research is the first downstream phase after the confirmed Grill contract.",
         )
+        self.record_orchestration_event("handoff", phase="GRILL")
         return self.resume()
 
     def propose_journal_candidates(self, candidates) -> WorkflowResult:
@@ -515,6 +715,7 @@ class ChemicalReviewOrchestrator:
             human_action="NONE",
             resume_note=f"Research handoff accepted; {target} is now the current phase.",
         )
+        self.record_orchestration_event("handoff", phase="RESEARCH")
         return self.resume()
 
     def run_prototype(self, submission) -> WorkflowResult:
@@ -525,7 +726,12 @@ class ChemicalReviewOrchestrator:
         self._require_state("PROTOTYPE")
         if not isinstance(submission, PrototypeSubmission):
             raise TypeError("submission must be a PrototypeSubmission")
-        result = PrototypeRunner(self.project_root, today=self.today).run(submission)
+        try:
+            result = PrototypeRunner(self.project_root, today=self.today).run(submission)
+        except Exception as error:
+            self._record_workflow_failure("PROTOTYPE", error)
+            raise
+        self._resolve_workflow_failure("PROTOTYPE")
         self._update_state(
             status="READY_FOR_NEXT_PHASE",
             next_action=(
@@ -560,6 +766,7 @@ class ChemicalReviewOrchestrator:
             human_action="NONE",
             resume_note=f"The researcher accepted the Prototype handoff to {target}.",
         )
+        self.record_orchestration_event("handoff", phase="PROTOTYPE")
         return self.resume()
 
     def build_review_blueprint(self, proposal) -> WorkflowResult:
@@ -617,6 +824,7 @@ class ChemicalReviewOrchestrator:
             human_action="NONE",
             resume_note="The adaptable blueprint remains saved while Issues defines executable units.",
         )
+        self.record_orchestration_event("handoff", phase="PRD")
         return self.resume()
 
     def create_review_units(self, units) -> WorkflowResult:
@@ -658,6 +866,7 @@ class ChemicalReviewOrchestrator:
             human_action="NONE",
             resume_note="Implement can collect ready unit results in any order; only central merge writes review-content.md.",
         )
+        self.record_orchestration_event("handoff", phase="ISSUES")
         return self.resume()
 
     def ready_review_units(self) -> tuple[str, ...]:
@@ -713,10 +922,9 @@ class ChemicalReviewOrchestrator:
     def submit_ready_unit_results(self, results) -> WorkflowResult:
         """Submit one execution batch and project a resumable boundary.
 
-        Continuous projects centrally merge the completed batch once. Acceptance
-        projects deliberately stop after the batch so the stage boundary stays
-        visible. Already complete/merged units are skipped on resume, making a
-        retried batch idempotent at the user-facing seam.
+        The canonical route centrally merges a completed batch once. Already
+        complete/merged units are skipped on resume, making a retried batch
+        idempotent at the user-facing seam.
         """
 
         from units import UnitManager, UnitResult
@@ -767,38 +975,30 @@ class ChemicalReviewOrchestrator:
                 resume_note="A hard unit blocker is persisted; resolve the human action, retry, and resume this batch.",
             )
             return self.resume()
-        if all_results_complete and self._execution_mode() == "continuous":
+        if all_results_complete:
             return self.merge_review_units(manager.completed_unit_ids())
 
-        next_action = (
-            "Acceptance checkpoint: centrally merge completed unit results into review-content.md."
-            if all_results_complete
-            else "Execute ready units independently: " + (", ".join(ready_ids) or "none")
+        next_action = "Execute ready units independently: " + (
+            ", ".join(ready_ids) or "none"
         )
         self._update_state(
-            status="READY_FOR_NEXT_PHASE" if all_results_complete else "ACTIVE",
+            status="ACTIVE",
             next_action=next_action,
             unit_ready=", ".join(ready_ids) or "NONE",
             human_action="NONE",
             open_questions="None recorded.",
-            resume_note=(
-                "Acceptance mode preserves the stage boundary; completed unit results remain isolated until central merge."
-                if all_results_complete
-                else "The execution batch completed; ready dependencies are persisted for the next batch."
-            ),
+            resume_note="The execution batch completed; ready dependencies are persisted for the next batch.",
         )
         return self.resume()
 
     def run_continuous(self, results) -> WorkflowResult:
-        """Execute a continuous-mode ready-unit batch through the public seam."""
+        """Compatibility alias for the canonical ready-unit batch seam."""
 
-        if self._execution_mode() != "continuous":
-            raise ValueError("run_continuous requires a project persisted with continuous mode.")
         return self.submit_ready_unit_results(results)
 
     execute_continuous = run_continuous
 
-    def run_continuous_cycle(
+    def run_cycle(
         self,
         *,
         research_config=None,
@@ -809,17 +1009,16 @@ class ChemicalReviewOrchestrator:
         review_assessment=None,
         journal_adaptation=None,
     ) -> WorkflowResult:
-        """Advance every supplied, non-blocked phase in one continuous cycle.
+        """Advance every supplied, non-blocked phase in the canonical cycle.
 
-        Continuous mode removes ordinary acceptance prompts, but it cannot
-        invent a missing scientific input.  Optional phase payloads are used
+        The route does not pause at ordinary stage boundaries, but it cannot
+        invent a missing scientific input. Optional phase payloads are used
         once when their phase is active; a missing payload returns the saved
-        state and its actionable ``next_action``.  Hard blockers and human
+        state and its actionable ``next_action``. Hard blockers and human
         review remain visible and resumable.
         """
 
-        if self._execution_mode() != "continuous":
-            raise ValueError("run_continuous_cycle requires a continuous project.")
+        self._execution_mode()
         if research_config is not None:
             from research import ResearchConfig
 
@@ -918,9 +1117,10 @@ class ChemicalReviewOrchestrator:
                     return self.run_review(review_assessment, journal_adaptation)
                 return state
             return state
-        raise RuntimeError("Continuous cycle exceeded its phase-transition safety bound.")
+        raise RuntimeError("Canonical cycle exceeded its phase-transition safety bound.")
 
-    advance_continuous = run_continuous_cycle
+    run_continuous_cycle = run_cycle
+    advance_continuous = run_cycle
 
     def export_docx(self, output_path=None, *, profile=None):
         """Export the canonical Markdown draft through the single project seam.
@@ -1059,6 +1259,7 @@ class ChemicalReviewOrchestrator:
                     resume_note="Generic Markdown remains canonical; journal adaptation must be refreshed.",
                 )
             raise error
+        self._require_canonical_delivery_ready()
         exporter = GenericChemistryDocxExporter(self.project_root)
         try:
             return exporter.export(output_path, profile=profile)
@@ -1078,6 +1279,92 @@ class ChemicalReviewOrchestrator:
                 )
             raise
 
+    def _require_canonical_delivery_ready(self) -> None:
+        from delivery import DocxExportError
+
+        if not self.state_path.is_file():
+            raise DocxExportError(
+                "DOCX export requires a canonical delivery-ready workflow state."
+            )
+        state = self._require_state()
+        allowed = (
+            state.get("phase") == "IMPLEMENT"
+            and state.get("status") == "READY_FOR_NEXT_PHASE"
+        ) or (
+            state.get("phase") == "REVIEW"
+            and state.get("status") in {
+                "READY_FOR_NEXT_PHASE",
+                "CANDIDATE_READY",
+            }
+        )
+        if not allowed:
+            raise DocxExportError(
+                "DOCX export requires a canonical delivery-ready state after central merge; "
+                f"found {state.get('phase')}/{state.get('status')}."
+            )
+        if not (self.project_root / "review-content.md").is_file():
+            raise DocxExportError(
+                "DOCX export requires canonical review-content.md after central merge."
+            )
+        metadata, _ = _split_frontmatter(
+            (self.project_root / "review-content.md").read_text(encoding="utf-8")
+        )
+        if metadata.get("readiness") != "CLAIM_READY":
+            raise DocxExportError(
+                "DOCX export requires CLAIM_READY canonical content; candidate or Prototype content remains bounded."
+            )
+
+    def _record_workflow_failure(self, phase: str, error: Exception) -> None:
+        receipt_path = self.project_root / "workflow-failure-receipt.md"
+        receipt = _document(
+            {
+                "kind": "chemical-review-workflow-failure",
+                "schema": "1",
+                "phase": phase,
+                "status": "BLOCKED",
+                "artifact_status": "NOT_GENERATED",
+                "failure_type": error.__class__.__name__,
+                "updated": self.today.isoformat(),
+            },
+            "# Workflow Failure Receipt\n\n"
+            "## Failure\n"
+            f"{error}\n\n"
+            "## Boundary\n"
+            "No downstream candidate or final delivery was authorized by this failed transition.\n\n"
+            "## Next action\n"
+            "Correct the evidence binding or phase input, then rerun from the persisted phase.\n",
+        )
+        self._write(receipt_path, receipt)
+        self._update_state(
+            status="WAITING_FOR_HUMAN",
+            next_action=(
+                "HUMAN_ACTION_REQUIRED: resolve the saved "
+                + phase
+                + " failure before downstream delivery."
+            ),
+            human_action="REQUIRED",
+            failure_receipt=str(receipt_path),
+            open_questions=str(error),
+            resume_note="The failed transition did not authorize downstream candidate delivery.",
+        )
+
+    def _resolve_workflow_failure(self, phase: str) -> None:
+        receipt_path = self.project_root / "workflow-failure-receipt.md"
+        if not receipt_path.is_file():
+            return
+        receipt = receipt_path.read_text(encoding="utf-8")
+        metadata, body = _split_frontmatter(receipt)
+        if metadata.get("phase") != phase or metadata.get("status") != "BLOCKED":
+            return
+        metadata["status"] = "RESOLVED"
+        metadata["updated"] = self.today.isoformat()
+        body = _set_section(
+            body,
+            "Resolution",
+            "A later run completed this phase; the original failure remains recorded above.",
+        )
+        self._write(receipt_path, _document(metadata, body))
+
     def retry_review_unit(self, unit_id: str) -> WorkflowResult:
         """Resume one blocked unit after its missing capability or input is addressed."""
 
@@ -1095,6 +1382,7 @@ class ChemicalReviewOrchestrator:
             open_questions="None recorded.",
             resume_note=f"Unit {unit_id} is ready to retry; its earlier blocked result remains in history.",
         )
+        self.record_orchestration_event("retry", phase="IMPLEMENT")
         return self.resume()
 
     def merge_review_units(
@@ -1527,7 +1815,7 @@ class ChemicalReviewOrchestrator:
         self,
         topic: str,
         *,
-        execution_mode: str = "acceptance",
+        execution_mode: str = "canonical",
         materials: Mapping[str, str | Path] | Sequence[str | Path] | None = None,
     ) -> None:
         material_sections = self._extract_known_materials(materials)
@@ -1551,6 +1839,7 @@ class ChemicalReviewOrchestrator:
             known=material_sections,
             include_heading=True,
         )
+        provenance = self._initial_answer_provenance(material_sections)
         intent = _document(
             {
                 "kind": "review-intent",
@@ -1570,6 +1859,7 @@ class ChemicalReviewOrchestrator:
             f"## Known facts\n{known_facts}\n\n"
             f"## Researcher context and prior knowledge\n{researcher_context}\n\n"
             f"## Evidence standards and constraints\n{evidence_standards}\n\n"
+            f"## Answer provenance\n{provenance}\n\n"
             f"## Frontier interview\n{frontier}\n\n"
             f"## Open questions\n{frontier}",
         )
@@ -1619,6 +1909,52 @@ class ChemicalReviewOrchestrator:
                 continue
             normalized[key] = raw_value.strip()
         return normalized
+
+    @staticmethod
+    def _initial_answer_provenance(material_sections: Mapping[str, str]) -> str:
+        fields = (
+            "Research question",
+            "Core-claim candidates",
+            "Scope",
+            "Exclusions",
+            "Audience or target journal",
+            "Expected contribution",
+            "Researcher context and prior knowledge",
+            "Evidence standards and constraints",
+            "Boundary scenarios",
+        )
+        source_by_field = {
+            "Research question": "USER_TOPIC",
+        }
+        for heading in material_sections:
+            if heading == "Scope and exclusions":
+                source_by_field["Scope"] = "USER_DOCUMENT"
+                source_by_field["Exclusions"] = "USER_DOCUMENT"
+            elif heading in fields:
+                source_by_field[heading] = "USER_DOCUMENT"
+        return "\n".join(
+            f"- {field}: {source_by_field.get(field, 'UNANSWERED')}"
+            for field in fields
+        )
+
+    def _record_answer_provenance(
+        self, intent: str, answers: Mapping[str, str]
+    ) -> str:
+        provenance = _parse_provenance(_section_value(intent, "Answer provenance"))
+        for key in answers:
+            if key == "scope":
+                provenance["Scope"] = "USER"
+            elif key == "exclusions":
+                provenance["Exclusions"] = "USER"
+            elif key in _INTENT_HEADINGS:
+                provenance[_INTENT_HEADINGS[key]] = "USER"
+            elif key in _DOMAIN_HEADINGS:
+                provenance[_DOMAIN_HEADINGS[key]] = "USER"
+        rendered = "\n".join(
+            f"- {field}: {source}"
+            for field, source in provenance.items()
+        )
+        return _set_section(intent, "Answer provenance", rendered)
 
     def _extract_known_materials(
         self,
@@ -1847,6 +2183,18 @@ class ChemicalReviewOrchestrator:
             value = extracted.get(heading)
             if value and _is_open(_section_value(intent, heading)):
                 intent = _set_section(intent, heading, value)
+        provenance = _parse_provenance(_section_value(intent, "Answer provenance"))
+        for heading in extracted:
+            if heading == "Scope and exclusions":
+                provenance["Scope"] = "USER_DOCUMENT"
+                provenance["Exclusions"] = "USER_DOCUMENT"
+            elif heading in provenance:
+                provenance[heading] = "USER_DOCUMENT"
+        intent = _set_section(
+            intent,
+            "Answer provenance",
+            "\n".join(f"- {field}: {source}" for field, source in provenance.items()),
+        )
         existing_facts = _section_value(intent, "Known facts")
         facts = self._render_known_facts(extracted)
         intent = _set_section(intent, "Known facts", _merge_unique_lines(existing_facts, facts))
@@ -1874,9 +2222,10 @@ class ChemicalReviewOrchestrator:
         if mode is None:
             return None
         normalized = mode.strip().lower()
+        normalized = LEGACY_EXECUTION_MODES.get(normalized, normalized)
         if normalized not in EXECUTION_MODES:
             raise ValueError(
-                "execution mode must be one of: " + ", ".join(EXECUTION_MODES)
+                "execution mode must be canonical; legacy acceptance/continuous values are accepted as aliases"
             )
         return normalized
 
@@ -1928,6 +2277,18 @@ class ChemicalReviewOrchestrator:
             missing.append("Expected contribution")
         return missing
 
+    def _missing_grill_fields(self, intent: str, domain: str) -> list[str]:
+        missing = self._missing_intent_fields(intent)
+        for heading in (
+            "Researcher context and prior knowledge",
+            "Evidence standards and constraints",
+        ):
+            if _is_open(_section_value(intent, heading)):
+                missing.append(heading)
+        if _is_open(_section_value(domain, "Boundary scenarios")):
+            missing.append("Boundary scenarios")
+        return missing
+
     def _require_state(self, phase: str | None = None) -> dict[str, str]:
         if not self.state_path.exists():
             raise FileNotFoundError(f"No workflow state at {self.state_path}")
@@ -1937,13 +2298,15 @@ class ChemicalReviewOrchestrator:
         return metadata
 
     def _execution_mode(self) -> str:
-        mode = self._require_state().get("execution_mode", "acceptance")
-        if mode not in EXECUTION_MODES:
-            raise ValueError(f"Unknown persisted execution mode: {mode}")
-        return mode
+        mode = self._require_state().get("execution_mode", "canonical")
+        try:
+            return self._normalize_execution_mode(mode) or "canonical"
+        except ValueError as error:
+            raise ValueError(f"Unknown persisted execution mode: {mode}") from error
 
     def _update_state(self, **updates: str | None) -> None:
         metadata, body = _split_frontmatter(self.state_path.read_text(encoding="utf-8"))
+        previous_status = metadata.get("status")
         for key, value in updates.items():
             if key in {"open_questions", "resume_note", "tool_degradation"}:
                 continue
@@ -1965,6 +2328,8 @@ class ChemicalReviewOrchestrator:
         body = _set_section(body, "Resume note", resume_note)
         body = _set_section(body, "Tool degradation or HUMAN_ACTION_REQUIRED", tool_degradation)
         self._write(self.state_path, _document(metadata, body))
+        if metadata.get("status") == "WAITING_FOR_HUMAN" and previous_status != "WAITING_FOR_HUMAN":
+            self.record_user_pause(phase=metadata.get("phase", "GRILL"))
 
     def _write(self, path: Path, content: str) -> None:
         path.write_text(content.rstrip() + "\n", encoding="utf-8")
@@ -2082,6 +2447,17 @@ def _parse_bullets(value: str) -> dict[str, str]:
         key, separator, item = line.lstrip()[1:].partition(":")
         if separator and (key.strip() in _INTENT_HEADINGS or key.strip() == "exclusions"):
             parsed[key.strip()] = item.strip()
+    return parsed
+
+
+def _parse_provenance(value: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for line in value.splitlines():
+        if not line.lstrip().startswith("-"):
+            continue
+        field, separator, source = line.lstrip()[1:].partition(":")
+        if separator and field.strip() and source.strip():
+            parsed[field.strip()] = source.strip()
     return parsed
 
 

@@ -82,7 +82,7 @@ class ProductUseAcceptanceTests(unittest.TestCase):
     def _grill(self, root, topic):
         orchestrator = ChemicalReviewOrchestrator(root)
         first = orchestrator.start(topic, mode="continuous")
-        self.assertEqual(first.execution_mode, "continuous")
+        self.assertEqual(first.execution_mode, "canonical")
         grilled = orchestrator.continue_grill(
             {
                 "core_claims": "Mechanistic branches depend on reaction context.",
@@ -90,12 +90,15 @@ class ProductUseAcceptanceTests(unittest.TestCase):
                 "exclusions": "Palladium-only systems",
                 "audience": "Chemistry researchers",
                 "contribution": "Reconcile condition-dependent evidence",
+                "researcher_context": "No prior context beyond the stated nickel coupling scope.",
+                "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                "boundary_scenarios": "Treat unmatched reaction conditions as non-comparable.",
             }
         )
         self.assertEqual(grilled.status, "READY_FOR_NEXT_PHASE")
         confirmed = orchestrator.confirm_current_intent()
         self.assertEqual(confirmed.phase, "RESEARCH")
-        self.assertEqual(confirmed.execution_mode, "continuous")
+        self.assertEqual(confirmed.execution_mode, "canonical")
         return orchestrator
 
     def test_topic_only_has_honest_degraded_handoff_without_pause_loop(self):

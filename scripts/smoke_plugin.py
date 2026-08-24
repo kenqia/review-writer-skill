@@ -7,9 +7,12 @@ from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 
+from plugin_boundary import resolve_plugin_skill
+
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / "plugins" / "chemical-review" / "skills" / "chemical-review"
+PLUGIN = ROOT / "plugins" / "chemical-review"
+SKILL = resolve_plugin_skill(PLUGIN).skill_path
 sys.path.insert(0, str(SKILL))
 
 from orchestrator import ChemicalReviewOrchestrator  # noqa: E402
@@ -25,7 +28,12 @@ def main() -> int:
             raise RuntimeError(
                 f"unexpected cold-start state: {result.phase}/{result.status}"
             )
-        expected = {"workflow-state.md", "review-intent.md", "domain-profile.md"}
+        expected = {
+            "workflow-state.md",
+            "review-intent.md",
+            "domain-profile.md",
+            "runtime-binding.md",
+        }
         generated = {path.name for path in root.iterdir()}
         if generated != expected:
             raise RuntimeError(f"unexpected cold-start assets: {sorted(generated)}")

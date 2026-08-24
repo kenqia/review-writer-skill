@@ -570,6 +570,9 @@ class ResearchRunner:
         authorization_issues = self._authorization_issues(config)
         budget = config.budget
         ledger = self._load_ledger()
+        ledger.setdefault("user_pause_count", 0)
+        ledger.setdefault("orchestration_event_count", 0)
+        ledger.setdefault("orchestration_events", [])
         cache = self._load_cache() if config.cache_enabled else _empty_cache()
         previous_snapshot = {
             key: ledger.get(key, 0)
@@ -2327,6 +2330,8 @@ class ResearchRunner:
             "cache_hits",
             "parser_pages",
             "parser_chunks",
+            "user_pause_count",
+            "orchestration_event_count",
             "runs_started",
             "last_run_id",
         ):
@@ -2526,6 +2531,9 @@ def _empty_ledger() -> dict[str, object]:
         "cache_hits": 0,
         "parser_pages": 0,
         "parser_chunks": 0,
+        "user_pause_count": 0,
+        "orchestration_event_count": 0,
+        "orchestration_events": [],
         "runs_started": 0,
         "last_run_id": "",
         "budget": {},

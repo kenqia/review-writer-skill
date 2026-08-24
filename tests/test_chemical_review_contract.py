@@ -187,7 +187,7 @@ class ChemicalReviewContractTests(unittest.TestCase):
 
             self.assertEqual(result.phase, "GRILL")
             self.assertEqual(result.status, "ACTIVE")
-            self.assertIn("continue Grill", result.next_action)
+            self.assertIn("Continue Grill", result.next_action)
             intent = (Path(project_dir) / "review-intent.md").read_text(encoding="utf-8")
             self.assertIn("open questions", intent.lower())
             self.assertIn("expected contribution", intent.lower())
@@ -204,6 +204,9 @@ class ChemicalReviewContractTests(unittest.TestCase):
                     "exclusions": "No device economics",
                     "audience": "Electrochemistry researchers",
                     "contribution": "A mechanism-centred comparison",
+                    "researcher_context": "Prior work compares interphase chemistry and transport.",
+                    "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                    "boundary_scenarios": "Treat unmatched interfaces and missing locators as non-comparable.",
                 }
             )
 
@@ -224,6 +227,9 @@ class ChemicalReviewContractTests(unittest.TestCase):
                     "core_claims": "Charge separation is the main bottleneck.",
                     "audience": "Photochemistry researchers",
                     "contribution": "Connect materials descriptors to selectivity.",
+                    "researcher_context": "No prior context beyond the stated photocatalysis question.",
+                    "evidence_standards": "Primary papers and legal full text with explicit locators.",
+                    "boundary_scenarios": "Separate aqueous and gas-phase systems when conditions differ.",
                 }
             )
             pending = orchestrator.propose_intent_change(
@@ -253,6 +259,9 @@ class ChemicalReviewContractTests(unittest.TestCase):
                     "exclusions": "Manufacturing economics",
                     "audience": "Materials chemistry researchers",
                     "contribution": "A mechanism-centred stability comparison",
+                    "researcher_context": "No prior context beyond the stated materials scope.",
+                    "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                    "boundary_scenarios": "Flag unmatched compositions and unavailable locators as gaps.",
                     "terms": "perovskite; metal halide; PSC",
                     "core_systems": "absorber, transport layer, and their interfaces",
                 }
@@ -301,6 +310,9 @@ class ChemicalReviewContractTests(unittest.TestCase):
                     "exclusions": "Biological photochemistry",
                     "audience": "Synthetic chemists",
                     "contribution": "Compare mechanistic descriptors across catalyst families",
+                    "researcher_context": "No prior context beyond the stated photoredox scope.",
+                    "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                    "boundary_scenarios": "Do not compare catalyst families without matched reaction conditions.",
                 }
             )
             orchestrator.confirm_current_intent()
@@ -330,6 +342,9 @@ class ChemicalReviewContractTests(unittest.TestCase):
                     "exclusions": "Thermal catalysis",
                     "audience": "Electrochemists",
                     "contribution": "A cross-material mechanistic map",
+                    "researcher_context": "No prior context beyond the stated electrocatalysis scope.",
+                    "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                    "boundary_scenarios": "Treat different electrolytes and endpoints as non-comparable.",
                 }
             )
             orchestrator.confirm_current_intent()
@@ -357,6 +372,9 @@ class ChemicalReviewContractTests(unittest.TestCase):
                     "exclusions": "Liquid electrolytes",
                     "audience": "Battery materials researchers",
                     "contribution": "Explain cross-study interface trends",
+                    "researcher_context": "No prior context beyond the stated interface question.",
+                    "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                    "boundary_scenarios": "Separate liquid and solid electrolyte systems.",
                 }
             )
             orchestrator.confirm_current_intent()
@@ -384,6 +402,9 @@ class ChemicalReviewContractTests(unittest.TestCase):
                     "exclusions": "Aqueous amine absorption",
                     "audience": "Adsorption researchers",
                     "contribution": "Compare structure-property tradeoffs",
+                    "researcher_context": "No prior context beyond the stated sorbent scope.",
+                    "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                    "boundary_scenarios": "Do not merge aqueous and solid sorbent endpoints.",
                 }
             )
             orchestrator.confirm_current_intent()
@@ -418,6 +439,9 @@ class ChemicalReviewContractTests(unittest.TestCase):
                     "exclusions": "Homogeneous catalysis",
                     "audience": "Catalysis researchers",
                     "contribution": "Compare structure-selectivity explanations",
+                    "researcher_context": "No prior context beyond the stated hydrogenation scope.",
+                    "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                    "boundary_scenarios": "Keep homogeneous and heterogeneous systems separate.",
                 }
             )
             orchestrator.confirm_current_intent()
@@ -653,6 +677,9 @@ class ChemicalReviewContractTests(unittest.TestCase):
                 "exclusions": "Palladium-only systems",
                 "audience": "Organometallic chemists",
                 "contribution": "Reconcile competing mechanistic models",
+                "researcher_context": "No prior context beyond the stated nickel coupling scope.",
+                "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                "boundary_scenarios": "Treat unmatched ligands, substrates, and locators as gaps.",
             }
         )
         orchestrator.confirm_current_intent()

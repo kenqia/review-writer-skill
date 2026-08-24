@@ -709,6 +709,12 @@ class GenericChemistryDocxExporter:
         _validate_figure_content_bindings(blocks, figures)
         document = self._build_document(blocks, figures, profile)
         qa = _export_qa(blocks, figures, profile)
+        workflow_metadata: dict[str, str] = {}
+        workflow_path = self.project_root / "workflow-state.md"
+        if workflow_path.is_file():
+            workflow_metadata, _ = _split_frontmatter(
+                workflow_path.read_text(encoding="utf-8")
+            )
         payload = _deterministic_docx(document)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(payload)
@@ -722,6 +728,10 @@ class GenericChemistryDocxExporter:
                     "target_journal": profile.target_journal or "NOT_SELECTED",
                     "source_digest": source_digest,
                     "output_digest": output_digest,
+                    "artifact_status": "FORMAT_VERIFIED_CANDIDATE",
+                    "scientific_status": "NOT_ASSESSED",
+                    "workflow_phase": workflow_metadata.get("phase", "UNKNOWN"),
+                    "workflow_status": workflow_metadata.get("status", "UNKNOWN"),
                     "figure_count": str(len(figures)),
                     **{key: str(value) for key, value in qa.items()},
                 },
@@ -741,7 +751,7 @@ class GenericChemistryDocxExporter:
                 f"- Image resolution: {qa['image_resolution_status']}\n"
                 f"- Layout: {qa['layout_status']}\n\n"
                 f"- Journal format mapping: {qa['journal_format_mapping']}\n\n"
-                "This is format evidence, not scientific or journal acceptance.\n",
+                "This verifies the candidate file projection only. It is not scientific, human, release, or journal acceptance.\n",
             ).rstrip()
             + "\n",
             encoding="utf-8",

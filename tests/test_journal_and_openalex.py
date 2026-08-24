@@ -34,6 +34,9 @@ class JournalAndOpenAlexTests(unittest.TestCase):
                     "scope": "Nickel-mediated C-C coupling",
                     "exclusions": "Palladium-only systems",
                     "expected_contribution": "Reconcile apparently conflicting mechanisms.",
+                    "researcher_context": "No prior context beyond the stated nickel coupling scope.",
+                    "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                    "boundary_scenarios": "Treat unmatched ligands, substrates, and locators as gaps.",
                 }
             )
 
@@ -265,6 +268,9 @@ class JournalAndOpenAlexTests(unittest.TestCase):
                 "scope": "Nickel-mediated C-C coupling",
                 "exclusions": "Palladium-only systems",
                 "expected_contribution": "Reconcile apparently conflicting mechanisms.",
+                "researcher_context": "No prior context beyond the stated nickel coupling scope.",
+                "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                "boundary_scenarios": "Treat unmatched ligands, substrates, and locators as gaps.",
             }
         )
         candidate = JournalCandidate(

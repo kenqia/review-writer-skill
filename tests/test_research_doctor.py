@@ -143,6 +143,9 @@ class ResearchDoctorContractTests(unittest.TestCase):
                 "exclusions": "Palladium-only systems",
                 "audience": "Organometallic chemists",
                 "contribution": "Reconcile competing mechanistic models",
+                "researcher_context": "No prior context beyond the stated nickel coupling scope.",
+                "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                "boundary_scenarios": "Treat unmatched ligands, substrates, and locators as gaps.",
             }
         )
         orchestrator.confirm_current_intent()
@@ -470,7 +473,7 @@ class ResearchDoctorProductUseAcceptanceTests(unittest.TestCase):
     def _complete_grill(self, project_dir, topic):
         orchestrator = ChemicalReviewOrchestrator(project_dir)
         started = orchestrator.start(topic, mode="continuous")
-        self.assertEqual(started.execution_mode, "continuous")
+        self.assertEqual(started.execution_mode, "canonical")
         grilled = orchestrator.continue_grill(
             {
                 "core_claims": "Mechanistic branches depend on reaction context.",
@@ -478,12 +481,15 @@ class ResearchDoctorProductUseAcceptanceTests(unittest.TestCase):
                 "exclusions": "Unrelated reaction families",
                 "audience": "Chemistry researchers",
                 "contribution": "Expose evidence gaps and competing explanations",
+                "researcher_context": "No prior context beyond the stated chemistry scope.",
+                "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                "boundary_scenarios": "Separate studies with unmatched conditions or endpoints.",
             }
         )
-        self.assertEqual(grilled.execution_mode, "continuous")
+        self.assertEqual(grilled.execution_mode, "canonical")
         confirmed = orchestrator.confirm_current_intent()
         self.assertEqual(confirmed.phase, "RESEARCH")
-        self.assertEqual(confirmed.execution_mode, "continuous")
+        self.assertEqual(confirmed.execution_mode, "canonical")
         return orchestrator
 
     def test_product_use_topic_only_continuous_no_key_research_is_honest_and_resumable(self):
@@ -502,7 +508,7 @@ class ResearchDoctorProductUseAcceptanceTests(unittest.TestCase):
             self.assertTrue(Path(project_dir, "source-registry.md").exists())
             self.assertIn("bounded no-key", result.next_action.lower())
             resumed = ChemicalReviewOrchestrator(project_dir).resume()
-            self.assertEqual(resumed.execution_mode, "continuous")
+            self.assertEqual(resumed.execution_mode, "canonical")
             self.assertEqual(resumed.assets["readiness"], "DISCOVERY_READY")
 
     def test_product_use_authorized_pdf_continuous_no_key_preserves_source_registry(self):

@@ -22,7 +22,12 @@ discipline from [Matt Pocock's `mattpocock/skills`](https://github.com/mattpococ
 but that project is not a chemistry or scientific authority. This plugin adds
 three readiness gates (`DISCOVERY_READY` → `EVIDENCE_READY` → `CLAIM_READY`),
 bounded Research budgets with a no-key fallback, source-bound
-Figure/Scheme/Table inventory, and continuous/acceptance execution modes.
+Figure/Scheme/Table inventory, and one canonical automatically advancing
+execution route. Historical `continuous` and `acceptance` values are accepted
+only as input aliases and are normalized to `canonical`; they do not create a
+second product workflow. The only in-workflow stop is `HUMAN_ACTION_REQUIRED`
+for missing authorization, major ambiguity, scientific judgment, or a hard
+blocker.
 
 `ChemicalReviewOrchestrator.export_docx()` rebuilds a generic chemistry DOCX
 from the canonical `review-content.md` and writes an export manifest. A

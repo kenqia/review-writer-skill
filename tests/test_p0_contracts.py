@@ -179,7 +179,7 @@ class P0ContractTests(unittest.TestCase):
             content = Path(project_dir, "review-content.md").read_text(encoding="utf-8")
             self.assertIn("readiness: EVIDENCE_READY", content)
 
-    def test_execution_mode_persists_and_continuous_batch_merges_once(self):
+    def test_legacy_continuous_alias_persists_as_canonical_and_merges_once(self):
         with TemporaryDirectory() as project_dir:
             orchestrator = self._implementation_project(
                 project_dir,
@@ -190,20 +190,20 @@ class P0ContractTests(unittest.TestCase):
             second = self._result("second", evidence_ids=("paper-1",))
             result = orchestrator.submit_ready_unit_results((first, second))
 
-            self.assertEqual(result.assets["execution_mode"], "continuous")
+            self.assertEqual(result.assets["execution_mode"], "canonical")
             self.assertEqual(result.assets["readiness"], "CLAIM_READY")
             content_path = Path(project_dir, "review-content.md")
             content = content_path.read_text(encoding="utf-8")
             self.assertEqual(content.count("Source-backed claim"), 2)
             resumed = ChemicalReviewOrchestrator(project_dir).resume()
-            self.assertEqual(resumed.execution_mode, "continuous")
+            self.assertEqual(resumed.execution_mode, "canonical")
             repeated = ChemicalReviewOrchestrator(project_dir).submit_ready_unit_results(
                 (first, second)
             )
-            self.assertEqual(repeated.assets["execution_mode"], "continuous")
+            self.assertEqual(repeated.assets["execution_mode"], "canonical")
             self.assertEqual(content_path.read_text(encoding="utf-8").count("Source-backed claim"), 2)
 
-    def test_acceptance_mode_pauses_at_unit_boundary_and_hard_blocker_is_actionable(self):
+    def test_legacy_acceptance_alias_uses_canonical_route_and_hard_blocker_is_actionable(self):
         with TemporaryDirectory() as project_dir:
             orchestrator = self._implementation_project(project_dir, mode="acceptance")
             blocked = self._result(
@@ -212,12 +212,12 @@ class P0ContractTests(unittest.TestCase):
             )
             result = orchestrator.submit_ready_unit_results((blocked,))
 
-            self.assertEqual(result.execution_mode, "acceptance")
+            self.assertEqual(result.execution_mode, "canonical")
             self.assertEqual(result.status, "WAITING_FOR_HUMAN")
             self.assertEqual(result.human_action, "REQUIRED")
             self.assertIn("HUMAN_ACTION_REQUIRED", result.next_action)
             self.assertIn("authorized PDF", result.next_action)
-            self.assertEqual(ChemicalReviewOrchestrator(project_dir).resume().execution_mode, "acceptance")
+            self.assertEqual(ChemicalReviewOrchestrator(project_dir).resume().execution_mode, "canonical")
 
     def _research_project(self, project_dir):
         orchestrator = ChemicalReviewOrchestrator(project_dir)
@@ -229,6 +229,9 @@ class P0ContractTests(unittest.TestCase):
                 "exclusions": "Palladium-only systems",
                 "audience": "Chemistry researchers",
                 "contribution": "Compare mechanism boundaries.",
+                "researcher_context": "No prior context beyond the stated nickel catalysis scope.",
+                "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                "boundary_scenarios": "Treat unmatched conditions as non-comparable.",
             }
         )
         orchestrator.confirm_current_intent()

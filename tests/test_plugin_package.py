@@ -9,7 +9,7 @@ import unittest
 
 from scripts.build_plugin import _files
 from scripts.package_plugin import release_files
-from scripts.plugin_boundary import RUNTIME_SKILL_FILES
+from scripts.plugin_boundary import RUNTIME_SKILL_FILES, resolve_plugin_skill
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +57,28 @@ class ChemicalReviewPluginTests(unittest.TestCase):
             capture_output=True,
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_plugin_resolution_reports_bundled_skill_identity(self):
+        resolution = resolve_plugin_skill(PLUGIN_DIR)
+
+        self.assertEqual(resolution.plugin_id, "chemical-review")
+        self.assertEqual(resolution.version, "0.1.0-beta.1")
+        self.assertEqual(
+            resolution.skill_path,
+            PLUGIN_DIR / "skills" / "chemical-review",
+        )
+
+    def test_plugin_resolution_fails_closed_when_skill_is_missing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            plugin = Path(temporary)
+            (plugin / ".codex-plugin").mkdir()
+            (plugin / ".codex-plugin" / "plugin.json").write_text(
+                json.dumps({"name": "chemical-review", "version": "0.1.0-beta.1", "skills": "./skills/"}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "HUMAN_ACTION_REQUIRED.*bundled skill"):
+                resolve_plugin_skill(plugin)
 
     def test_release_file_allowlist_is_explicit(self):
         files = {relative for _, relative in release_files(PLUGIN_DIR)}

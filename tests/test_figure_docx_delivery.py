@@ -231,7 +231,7 @@ class FigureDocxDeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "citation.*target paragraph"):
                 GenericChemistryDocxExporter(root).export()
 
-    def test_orchestrator_exposes_the_delivery_seam(self):
+    def test_orchestrator_rejects_direct_export_without_canonical_workflow_state(self):
         with TemporaryDirectory() as project_dir:
             root = Path(project_dir)
             root.joinpath("review-content.md").write_text(
@@ -254,9 +254,8 @@ class FigureDocxDeliveryTests(unittest.TestCase):
                 encoding="utf-8",
             )
             orchestrator = ChemicalReviewOrchestrator(root)
-            result = orchestrator.export_docx()
-            self.assertEqual(result.status, "EXPORTED")
-            self.assertTrue(result.output_path.is_file())
+            with self.assertRaisesRegex(DocxExportError, "canonical delivery-ready"):
+                orchestrator.export_docx()
 
     def test_source_figure_inventory_preserves_locator_hash_and_placement(self):
         with TemporaryDirectory() as project_dir:

@@ -7,14 +7,14 @@
 项目根目录由本次运行明确指定；三个资产直接保存在该目录。随 skill 提供的
 `orchestrator.py` 是一个无数据库的最小文件编排器，用于验证启动、Grill 更新、冷启动恢复和确认边界；它不代替后续 Research 或写作能力。
 
-本流程在入口持久化 `execution_mode`：`continuous` 会批量推进所有 ready units，只在硬阻塞或
-`HUMAN_ACTION_REQUIRED` 停下；`acceptance` 在阶段/批次边界暂停，适合人工验收。两种模式共用同一
-证据门和单一 Markdown 状态，不把“少停顿”当成降低来源要求。
+本流程只持久化一条 `canonical` execution route。对已准备好的阶段，可通过 orchestrator 的
+`run_cycle(...)` 一次提交 Research、Prototype、PRD、Issues、Implement 和 Review 所需的 agent payload；
+它自动跨过普通 handoff、unit-plan 和 ready-unit 边界，只在授权缺失、重大歧义、科学判断或硬阻塞时返回
+`HUMAN_ACTION_REQUIRED`。缺少普通 payload 时返回保存的 `next_action`，不会猜测或重复已完成工作。
 
-对已准备好的阶段，可通过 orchestrator 的 `run_continuous_cycle(...)` 一次提交 Research、Prototype、
-PRD、Issues、Implement 和 Review 所需的 agent payload。它会自动接受普通 handoff 和 unit-plan 边界；
-缺少科学输入、授权、能力配置或遇到 `WAITING_FOR_HUMAN` 时立即返回保存的 `next_action`，不会猜测或
-重复已完成工作。`acceptance` 项目继续使用逐阶段入口，以保留显式人工验收。
+历史调用传入的 `continuous` / `acceptance` 只作为输入 alias，入口立即归一化为 `canonical`；它们不代表
+两种产品模式，也不改变 evidence、scientific 或 delivery gates。逐阶段方法保留为内部/兼容 API，但产品
+路径仍只有 canonical cycle。
 
 ## Inputs
 
@@ -40,9 +40,9 @@ PRD、Issues、Implement 和 Review 所需的 agent payload。它会自动接受
 ## Phase transitions
 
 1. 没有状态的主题进入 `GRILL`。
-2. `GRILL` 只有在研究问题、范围、预期贡献和排除项足够明确，且目标读者已给出，或目标期刊候选已被确认并读取当前官方指南时，才可建议进入 `RESEARCH`。
-3. 首次综述必须经过 `RESEARCH`。后续循环可以依据 Research 交接判断或 Review 反馈继续 Research、进入 `PROTOTYPE` 或恢复到更早阶段。
-4. Research 发现较高的问题边界、比较或价值风险时先进入 `PROTOTYPE`；风险较低且研究者接受 Research 的直接交接理由时可以进入 `PRD`。Prototype 若只有摘要复述或问题没有非平凡综合价值，回到 `GRILL` 或 `RESEARCH`。
+2. `GRILL` 只有在研究问题、范围、预期贡献、排除项、研究者语境、证据标准和边界场景足够明确，且目标读者已给出，或目标期刊候选已被确认并读取当前官方指南时，才可建议进入 `RESEARCH`。
+3. 首次综述必须经过 `RESEARCH`。canonical cycle 在 Research 交接证据齐备时自动进入下一普通阶段；后续循环可以依据 Research 交接判断或 Review 反馈继续 Research、进入 `PROTOTYPE` 或恢复到更早阶段。
+4. Research 发现较高的问题边界、比较或价值风险时先进入 `PROTOTYPE`；风险较低时可以直接进入 `PRD`。Prototype 若只有摘要复述或问题没有非平凡综合价值，回到 `GRILL` 或 `RESEARCH`；重大歧义或科学判断在此处触发 `HUMAN_ACTION_REQUIRED`，而不是新增执行模式。
 5. `PRD` 形成蓝图后进入 `ISSUES`，`ISSUES` 形成有依赖关系的研究/写作单元后进入 `IMPLEMENT`。
 6. `IMPLEMENT` 更新单一综述内容源后进入 `REVIEW`。
 7. `REVIEW` 产生干净稿、研究者版和下一轮建议；反馈按最早失效阶段回退，不默认从头重做。

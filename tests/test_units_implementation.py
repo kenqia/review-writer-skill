@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -514,6 +515,22 @@ class UnitImplementationTests(unittest.TestCase):
 
             retried = orchestrator.retry_review_unit("full-text-check")
             self.assertEqual(retried.status, "ACTIVE")
+            ledger = json.loads(
+                Path(project_dir, "run-budget.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(ledger["orchestration_events"][-1], {
+                "event": "retry",
+                "phase": "IMPLEMENT",
+            })
+            cold_resumed = ChemicalReviewOrchestrator(project_dir).resume()
+            self.assertEqual(cold_resumed.status, "ACTIVE")
+            resumed_ledger = json.loads(
+                Path(project_dir, "run-budget.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                resumed_ledger["orchestration_event_count"],
+                len(resumed_ledger["orchestration_events"]),
+            )
             completed = orchestrator.submit_review_unit_result(
                 self._result("full-text-check", section="Evidence boundary")
             )
@@ -539,6 +556,9 @@ class UnitImplementationTests(unittest.TestCase):
                 "exclusions": "Palladium-only systems",
                 "audience": "Organometallic chemistry researchers",
                 "contribution": "Reconcile apparently conflicting mechanistic evidence",
+                "researcher_context": "No prior context beyond the stated nickel coupling scope.",
+                "evidence_standards": "Primary papers with legal full-text page or section locators.",
+                "boundary_scenarios": "Treat unmatched ligands, substrates, and locators as gaps.",
             }
         )
         orchestrator.confirm_current_intent()

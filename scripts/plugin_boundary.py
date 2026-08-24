@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+import json
 from pathlib import Path
 
 
@@ -25,6 +27,65 @@ RUNTIME_SKILL_FILES = frozenset(
     }
 )
 PLUGIN_ROOT_FILES = frozenset({".codex-plugin/plugin.json", "LICENSE", "README.md"})
+
+
+def _resolution_error(message: str) -> ValueError:
+    return ValueError("HUMAN_ACTION_REQUIRED: " + message)
+
+
+@dataclass(frozen=True)
+class PluginSkillResolution:
+    """Non-sensitive identity for one resolved bundled skill."""
+
+    plugin_id: str
+    version: str
+    skill_path: Path
+
+
+def resolve_plugin_skill(plugin_root: Path) -> PluginSkillResolution:
+    """Resolve exactly the skill declared by one plugin manifest.
+
+    The package boundary must never guess a global fallback. A missing or
+    mismatched bundled skill is an installation error that callers surface to
+    the user before executing a different workflow.
+    """
+
+    root = plugin_root.resolve()
+    manifest_path = root / ".codex-plugin" / "plugin.json"
+    if not manifest_path.is_file():
+        raise _resolution_error("plugin manifest is missing; reinstall the Chemical Review plugin")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise _resolution_error("plugin manifest is unreadable; reinstall the Chemical Review plugin") from error
+    plugin_id = str(manifest.get("name", "")).strip()
+    version = str(manifest.get("version", "")).strip()
+    skills_value = str(manifest.get("skills", "")).strip()
+    if plugin_id != "chemical-review" or not version or not skills_value:
+        raise _resolution_error(
+            "plugin manifest does not identify the Chemical Review bundled skill"
+        )
+    skills_root = (root / skills_value).resolve()
+    try:
+        skills_root.relative_to(root)
+    except ValueError as error:
+        raise _resolution_error("plugin skills path escapes the plugin root") from error
+    skill_path = skills_root / plugin_id
+    skill_file = skill_path / "SKILL.md"
+    if not skill_file.is_file():
+        raise _resolution_error(
+            "Chemical Review bundled skill is missing; reinstall the plugin or choose the verified source"
+        )
+    skill_text = skill_file.read_text(encoding="utf-8")
+    if "name: chemical-review" not in skill_text:
+        raise _resolution_error(
+            "Chemical Review bundled skill identity does not match its manifest"
+        )
+    return PluginSkillResolution(
+        plugin_id=plugin_id,
+        version=version,
+        skill_path=skill_path,
+    )
 
 
 def relative_files(root: Path) -> dict[str, Path]:

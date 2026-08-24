@@ -45,6 +45,9 @@ journal_guide_locator: <official guide locator when selected>
 ## Evidence standards and constraints
 <!-- 原始论文、合法全文、页码/章节 locator、时间边界、访问和工具约束。 -->
 
+## Answer provenance
+<!-- 每个 Grill 输入标明 USER、USER_DOCUMENT 或 UNANSWERED；未知信息写 UNKNOWN，不由模型补齐。 -->
+
 ## Frontier interview
 <!-- 当前尚未解决、会改变研究路线的最小问题集合；每轮只推进当前 frontier。 -->
 
@@ -92,7 +95,7 @@ status: ACTIVE | WAITING_FOR_HUMAN | READY_FOR_NEXT_PHASE | CANDIDATE_READY
 next_action: <one concrete action>
 intent_revision: 0
 intent_confirmation: NOT_REQUIRED | REQUIRED | CONFIRMED
-execution_mode: continuous | acceptance
+execution_mode: canonical
 human_action: NONE | REQUIRED
 journal_status: UNSET | PROPOSED | SELECTED | NOT_REQUIRED
 journal_confirmation: REQUIRED | CONFIRMED | NOT_APPLICABLE

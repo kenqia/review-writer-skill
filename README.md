@@ -70,8 +70,9 @@ $chemical-review
 ligand effects in nickel-mediated C–C coupling
 ```
 
-按 Grill 回答研究问题、范围/排除项、目标读者和预期贡献；Research 生成七条检索路径和分层
-文献集；Prototype 测试跨论文比较、解释、反驳或新问题；随后调整 PRD、Issues 和 Implement。
+按 Grill 回答研究问题、范围/排除项、目标读者、研究者语境、证据标准和边界场景；Research 生成七条检索
+路径和分层文献集；Prototype 测试跨论文比较、解释、反驳或新问题；随后由 canonical cycle 推进 PRD、
+Issues 和 Implement。
 Review 最终从同一 `review-content.md` 生成：
 
 - `clean-manuscript.md`：没有内部标注的干净正文；
@@ -90,13 +91,14 @@ page locator 的本地文本块；这是低保真恢复路线，不宣称识别�
 API、配额受限或全文受限时，流程必须保留降级信息，必要时请求
 用户提供 DOI、题录、合法全文或授权 PDF；摘要、排名、解析器输出和模型推断都不能伪装成文献事实。
 
-Research 的 `DISCOVERY_READY → EVIDENCE_READY → CLAIM_READY` 是资格门，不是论文数量评分。项目可
-选择 `continuous` 模式批量推进可执行单元，也可选择 `acceptance` 在阶段边界验收；两者只在硬阻塞或 `HUMAN_ACTION_REQUIRED` 暂停/停顿。无 key 时生成可执行 `research-setup-wizard.md` 并保留
-`NO_KEY_FALLBACK`，不会自动修改 shell/auth/.env，也不会把用户 PDF 上传到云端 parser。
+Research 的 `DISCOVERY_READY → EVIDENCE_READY → CLAIM_READY` 是资格门，不是论文数量评分。所有项目
+都走一条 `canonical` workflow：当阶段 payload 已具备时，普通 handoff、Issues 和 Implement 边界由唯一
+orchestrator seam 自动推进。旧调用传入的 `continuous` / `acceptance` 只作为兼容输入 alias，立即归一化为
+`canonical`，不会形成第二条产品路线，也不会持久化为另一种模式。只有授权缺失、重大歧义、需要科学判断
+或硬阻塞时才返回 `HUMAN_ACTION_REQUIRED`；这不会放松任何 evidence/scientific gate。
 
-当 agent 已准备好各阶段 payload 时，continuous 项目可通过唯一 orchestrator seam 的
-`run_continuous_cycle(...)` 自动跨过普通 handoff 和 Issues/Implement 边界；缺少授权、能力配置、科学
-判断或其他硬阻塞时仍返回可恢复的 `next_action`，不会伪造输入或跳过证据门。
+无 key 时生成可执行 `research-setup-wizard.md` 并保留 `NO_KEY_FALLBACK`，不会自动修改 shell/auth/.env，
+也不会把用户 PDF 上传到云端 parser。canonical cycle 不会猜测缺失输入、伪造 handoff 或跳过证据门。
 
 图表在 Research/Implement 阶段登记到 `figure-inventory.md`：Figure、Scheme、Table 都要有来源
 identity、page/section/bbox locator、hash、resolution、extraction status 和正文放置绑定。当前
