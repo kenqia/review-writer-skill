@@ -69,7 +69,8 @@ Research 的 readiness 分三层，不能跨层偷升：`DISCOVERY_READY` 只表
 no-key 发现；`EVIDENCE_READY` 还要求合法全文、访问依据和页码/章节 locator-bearing 解析；
 `CLAIM_READY` 由下游 claim binding、比较矩阵和人工/审查输入共同形成。metadata、摘要或 parser
 输出本身都不能生成 `SOURCE_FACT`。新的 `literature-set.md` 逐条写显式 readiness；旧项目条目
-没有标记时保持兼容默认，直到人类或 Research 明确降级。
+没有标记时按 `DISCOVERY_READY` 处理，必须由 Research 或人工核验补齐合法全文、稳定 locator 和
+显式 readiness 后，才能支持 `SOURCE_FACT`。
 
 一次 Research 运行必须完成以下可检查结果：
 

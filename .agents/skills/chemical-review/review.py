@@ -897,6 +897,8 @@ def _literature_evidence_readiness(text: str) -> dict[str, str]:
         if not separator:
             continue
         match = re.search(r"readiness:\s*([A-Z_]+)", details, flags=re.IGNORECASE)
+        # Missing readiness is unknown, not evidence of locator-bearing full
+        # text. Units and Review therefore fail closed in the same way.
         records[identity.strip()] = match.group(1).upper() if match else "DISCOVERY_READY"
     return records
 

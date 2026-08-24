@@ -268,7 +268,7 @@ updated: YYYY-MM-DD
 
 # Layered Literature Set
 
-<!-- 新生成的条目带 [readiness: DISCOVERY_READY|EVIDENCE_READY]；没有该标记的旧项目条目保持兼容默认，只有显式 readiness 才改变其主张资格。 -->
+<!-- 新生成的条目带 [readiness: DISCOVERY_READY|EVIDENCE_READY]；没有该标记的旧项目条目按 DISCOVERY_READY 处理，不能支持 SOURCE_FACT，直到 Research 或人工核验补齐合法全文、locator 和显式 readiness。 -->
 
 ## Anchor/core
 ## Extension

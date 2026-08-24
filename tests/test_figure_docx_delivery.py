@@ -26,12 +26,18 @@ from orchestrator import ChemicalReviewOrchestrator, _document, _split_frontmatt
 
 class FigureDocxDeliveryTests(unittest.TestCase):
     @staticmethod
-    def _write_source_registry(root: Path, identity: str) -> None:
+    def _write_source_registry(
+        root: Path,
+        identity: str,
+        *,
+        digest: str = "none",
+        media_ids: str = "none",
+    ) -> None:
         root.joinpath("source-registry.md").write_text(
             "---\nkind: research-source-registry\nschema: 1\n---\n\n"
             "| Source ID | Title | Identity | Kind | Provider | Local path | Access basis | Priority | Metadata | Full text | Parser | Locator(s) | Media IDs | Digest | Failure/recovery |\n"
             "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
-            f"| paper:fixture | Fixture | {identity} | DISCOVERED_METADATA | fixture | none | OPEN_ACCESS | NORMAL | DISCOVERED | FOUND | PARSED | p. 1 | none | none | none |\n",
+            f"| paper:fixture | Fixture | {identity} | DISCOVERED_METADATA | fixture | none | OPEN_ACCESS | NORMAL | DISCOVERED | FOUND | PARSED | p. 1 | {media_ids} | {digest} | none |\n",
             encoding="utf-8",
         )
 
@@ -231,6 +237,47 @@ class FigureDocxDeliveryTests(unittest.TestCase):
             self.assertIn(hashlib.sha256(source_image.read_bytes()).hexdigest(), text)
             self.assertTrue(asset.resolution)
 
+    def test_source_pdf_digest_is_distinct_from_asset_hash_and_registry_bound(self):
+        with TemporaryDirectory() as project_dir:
+            root = Path(project_dir)
+            source_image = root / "source-figure.png"
+            Image.new("RGB", (120, 80), "white").save(source_image)
+            inventory = FigureInventory(root)
+            registered = inventory.register_source_figure(
+                FigureAsset(
+                    asset_id="fig-1",
+                    source_id="paper-1",
+                    source_path=source_image.name,
+                    locator="p. 4, Figure 2",
+                    caption="Source caption.",
+                    provenance="Original figure from the cited paper.",
+                    source_digest="source-pdf-digest",
+                    extraction_status="VERIFIED",
+                    target_section="Results",
+                    target_paragraph="P-1",
+                    claim_ids=("claim-1",),
+                    citation_ids=("paper-1",),
+                )
+            )
+            inventory.persist()
+
+            loaded = FigureInventory.load(root).assets["fig-1"]
+            self.assertEqual(loaded.source_digest, "source-pdf-digest")
+            self.assertEqual(
+                registered.sha256,
+                hashlib.sha256(source_image.read_bytes()).hexdigest(),
+            )
+            self.assertNotEqual(registered.sha256, registered.source_digest)
+
+            self._write_source_registry(
+                root,
+                "paper-1",
+                digest="different-source-digest",
+                media_ids="fig-1",
+            )
+            with self.assertRaisesRegex(ValueError, "source digest"):
+                FigureInventory.load(root).validate_for_delivery()
+
     def test_non_source_figure_cannot_enter_source_inventory(self):
         with TemporaryDirectory() as project_dir:
             with self.assertRaisesRegex(ValueError, "source figure"):
@@ -409,6 +456,7 @@ class FigureDocxDeliveryTests(unittest.TestCase):
                 "Margins: 2 cm.\n"
                 "Font: Arial 10 pt.\n"
                 "Single line spacing.\n"
+                "Maximum 5,000 words.\n"
                 "References must use the journal style."
             )
             guide_digest = hashlib.sha256(guide_content.encode("utf-8")).hexdigest()
@@ -428,6 +476,15 @@ class FigureDocxDeliveryTests(unittest.TestCase):
                 encoding="utf-8",
             )
             profile = JournalProfile.from_guide_snapshot(root)
+            self.assertEqual(profile.adaptation_status, "GAP")
+            self.assertEqual(
+                profile.mapped_requirements,
+                ("Margins: 2 cm.", "Font: Arial 10 pt.", "Single line spacing."),
+            )
+            self.assertEqual(
+                profile.unmapped_requirements,
+                ("Maximum 5,000 words.", "References must use the journal style."),
+            )
             root.joinpath("review-content.md").write_text(
                 _document(
                     {
@@ -455,7 +512,7 @@ class FigureDocxDeliveryTests(unittest.TestCase):
             self.assertEqual(document.styles["Normal"].font.name, "Arial")
             self.assertAlmostEqual(document.styles["Normal"].font.size.pt, 10, places=2)
             manifest = exported.manifest_path.read_text(encoding="utf-8")
-            self.assertIn("journal_format_mapping: MAPPED_FROM_GUIDE", manifest)
+            self.assertIn("journal_format_mapping: PARTIAL_GAP", manifest)
 
     def test_changed_or_unavailable_guide_preserves_old_profile_and_requests_recovery(self):
         with TemporaryDirectory() as project_dir:
@@ -514,6 +571,35 @@ class FigureDocxDeliveryTests(unittest.TestCase):
             self.assertEqual(unavailable.guide_digest, original.guide_digest)
             self.assertEqual(unavailable.adaptation_status, "GAP")
             self.assertIn("unavailable", unavailable.risk.lower())
+
+    def test_unchanged_guide_cannot_resurrect_an_unmapped_profile_as_met(self):
+        with TemporaryDirectory() as project_dir:
+            root = Path(project_dir)
+            guide_content = "References must use the journal style."
+            digest = hashlib.sha256(guide_content.encode("utf-8")).hexdigest()
+            root.joinpath("journal-guide.md").write_text(
+                _document(
+                    {
+                        "kind": "journal-guide-snapshot",
+                        "schema": "1",
+                        "target_journal": "Example Chemistry",
+                        "source_locator": "https://example.org/guide",
+                        "retrieved_at": "2026-08-24",
+                        "content_digest": digest,
+                    },
+                    "# Official Journal Guide Snapshot\n\n"
+                    f"## Guide content\n{guide_content}\n",
+                ),
+                encoding="utf-8",
+            )
+            JournalProfile.from_guide_snapshot(root).persist(root)
+
+            reconciled = JournalProfile.reconcile(root)
+
+            self.assertEqual(reconciled.adaptation_status, "GAP")
+            self.assertEqual(reconciled.unmapped_requirements, (guide_content,))
+            persisted = JournalProfile._load_persisted(root / "journal-profile.md")
+            self.assertEqual(persisted.adaptation_status, "GAP")
 
 
 if __name__ == "__main__":

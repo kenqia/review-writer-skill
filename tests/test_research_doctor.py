@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -39,14 +40,35 @@ class _Discovery:
 class _FullText:
     name = "Unpaywall"
 
+    def __init__(self, text="authorized text"):
+        self.text = text
+        self.calls = []
+
     def fetch(self, paper):
+        self.calls.append(paper.identifier)
         return FullTextResult(
             paper.identifier,
             "FOUND",
-            "authorized text",
+            self.text,
             self.name,
             locator=f"fixture://{paper.identifier}.pdf",
             access_basis="OPEN_ACCESS",
+        )
+
+
+class _LocalParser:
+    name = "MinerU"
+
+    def __init__(self):
+        self.calls = []
+
+    def parse(self, full_text):
+        self.calls.append(full_text.paper_id)
+        return _research.ParsedDocument(
+            full_text.paper_id,
+            self.name,
+            sections=("Results",),
+            locators=("p. 1",),
         )
 
 
@@ -60,6 +82,23 @@ class _CloudParser:
     def parse(self, full_text):
         self.calls.append(full_text.paper_id)
         raise AssertionError("a cloud parser must not receive a user PDF without consent")
+
+
+class _ConsentedCloudParser:
+    name = "CloudParser"
+    cloud = True
+
+    def __init__(self):
+        self.calls = []
+
+    def parse(self, full_text):
+        self.calls.append(full_text.paper_id)
+        return _research.ParsedDocument(
+            full_text.paper_id,
+            self.name,
+            sections=("Results",),
+            locators=("p. 2",),
+        )
 
 
 class ResearchDoctorContractTests(unittest.TestCase):
@@ -147,6 +186,35 @@ class ResearchDoctorContractTests(unittest.TestCase):
             self.assertIn("consent", registry.lower())
             self.assertIn("source_registry", result.assets)
 
+    def test_explicit_cloud_parser_consent_is_project_persisted(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._ready(project_dir)
+            cloud = _ConsentedCloudParser()
+
+            result = orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(_Discovery((PaperRecord("p-consent", "Consent paper"),)),),
+                    full_text=(_FullText(),),
+                    parsers=(cloud,),
+                    cloud_parser_consent=True,
+                    run_id="consent-run",
+                )
+            )
+
+            self.assertEqual(cloud.calls, ["p-consent"])
+            self.assertEqual(result.assets["cloud_parser_consent"], "GRANTED")
+            consent_path = Path(result.assets["cloud_parser_consent_asset"])
+            self.assertTrue(consent_path.is_file())
+            consent = consent_path.read_text(encoding="utf-8")
+            self.assertIn("kind: project-pdf-parser-consent", consent)
+            self.assertIn("run_id: consent-run", consent)
+            self.assertEqual(
+                ChemicalReviewOrchestrator(project_dir).resume().assets[
+                    "cloud_parser_consent"
+                ],
+                "GRANTED",
+            )
+
     def test_budget_stopping_and_ledger_report_marginal_coverage(self):
         with TemporaryDirectory() as project_dir:
             orchestrator = self._ready(project_dir)
@@ -195,6 +263,83 @@ class ResearchDoctorContractTests(unittest.TestCase):
             self.assertEqual(first.assets["readiness"], "DISCOVERY_READY")
             ChemicalReviewOrchestrator(project_dir).run_research(config)
             self.assertGreaterEqual(len(discovery.calls), 2)
+
+    def test_cached_full_text_cannot_bypass_current_output_budget(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._ready(project_dir)
+            discovery = _Discovery((PaperRecord("p-cache", "P"),))
+            full_text = _FullText("authorized full text " * 20)
+            parser = _LocalParser()
+            orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(discovery,),
+                    full_text=(full_text,),
+                    parsers=(parser,),
+                    budget=ResearchBudget(max_queries=10, max_requests=20),
+                )
+            )
+
+            result = ChemicalReviewOrchestrator(project_dir).run_research(
+                ResearchConfig(
+                    discovery=(discovery,),
+                    full_text=(full_text,),
+                    parsers=(parser,),
+                    budget=ResearchBudget(
+                        max_queries=10,
+                        max_requests=20,
+                        max_output_tokens=4,
+                    ),
+                )
+            )
+
+            self.assertEqual(result.assets["readiness"], "DISCOVERY_READY")
+            self.assertEqual(full_text.calls, ["p-cache"])
+            self.assertEqual(parser.calls, ["p-cache"])
+            evidence = Path(project_dir, "research-evidence.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("cached full-text", evidence)
+            ledger = json.loads(
+                Path(project_dir, "run-budget.json").read_text(encoding="utf-8")
+            )
+            self.assertGreater(ledger["output_tokens"], 0)
+            self.assertLessEqual(ledger["output_tokens"], 4)
+
+    def test_cached_parse_cannot_bypass_current_parser_page_budget(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._ready(project_dir)
+            discovery = _Discovery((PaperRecord("p-pages", "P"),))
+            full_text = _FullText("authorized text")
+            parser = _LocalParser()
+            orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(discovery,),
+                    full_text=(full_text,),
+                    parsers=(parser,),
+                    budget=ResearchBudget(max_queries=10, max_requests=20),
+                )
+            )
+
+            result = ChemicalReviewOrchestrator(project_dir).run_research(
+                ResearchConfig(
+                    discovery=(discovery,),
+                    full_text=(full_text,),
+                    parsers=(parser,),
+                    budget=ResearchBudget(
+                        max_queries=10,
+                        max_requests=20,
+                        max_parser_pages=0,
+                    ),
+                )
+            )
+
+            self.assertEqual(result.assets["readiness"], "DISCOVERY_READY")
+            self.assertEqual(full_text.calls, ["p-pages"])
+            self.assertEqual(parser.calls, ["p-pages"])
+            evidence = Path(project_dir, "research-evidence.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("cached parsed document", evidence)
 
 
 class ResearchDoctorProductUseAcceptanceTests(unittest.TestCase):

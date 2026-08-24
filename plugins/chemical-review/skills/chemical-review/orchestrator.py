@@ -8,7 +8,7 @@ boundaries testable without introducing a service or a second state store.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 import re
@@ -409,7 +409,7 @@ class ChemicalReviewOrchestrator:
                     "HUMAN_ACTION_REQUIRED: restore access to the official journal guide or provide "
                     "a fresh official guide locator, then retry."
                 ),
-                journal_guide_status="FAILED",
+                journal_guide_status=state.get("journal_guide_status", "NONE"),
                 human_action="REQUIRED",
                 open_questions="The selected journal guide could not be fetched.",
                 resume_note=(
@@ -455,7 +455,18 @@ class ChemicalReviewOrchestrator:
 
         self._require_state("RESEARCH")
         if config is None:
+            state = self._require_state("RESEARCH")
             config = ResearchConfig.default()
+            saved_dir = state.get("authorized_pdf_dir", "").strip()
+            saved_paths = tuple(
+                item.strip()
+                for item in state.get("authorized_pdf_paths", "").splitlines()
+                if item.strip() and item.strip() != "NONE"
+            )
+            if saved_dir and saved_dir != "NONE":
+                config = replace(config, authorized_pdf_dir=saved_dir)
+            if saved_paths:
+                config = replace(config, user_pdfs=saved_paths)
         if not isinstance(config, ResearchConfig):
             raise TypeError("config must be a ResearchConfig")
         result = ResearchRunner(self.project_root, today=self.today).run(
@@ -477,6 +488,12 @@ class ChemicalReviewOrchestrator:
             stopping_reason=result.assets.get("stopping_reason", "None recorded."),
             source_registry=result.assets.get("source_registry", "source-registry.md"),
             run_budget=result.assets.get("run_budget", "run-budget.json"),
+            authorized_pdf_dir=result.assets.get("authorized_pdf_dir", "NONE"),
+            authorized_pdf_paths=result.assets.get("authorized_pdf_paths", "NONE"),
+            cloud_parser_consent=result.assets.get("cloud_parser_consent", "NOT_GRANTED"),
+            cloud_parser_consent_asset=result.assets.get(
+                "cloud_parser_consent_asset", "NONE"
+            ),
             tool_degradation=result.assets.get("tool_degradation", "None recorded."),
             resume_note="Research assets are persisted; rerun this phase after configuring a missing capability or accepting its handoff.",
         )

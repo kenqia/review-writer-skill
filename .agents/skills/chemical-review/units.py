@@ -770,12 +770,12 @@ class UnitManager:
                 )
                 evidence_id = identity_match.group(1).strip() if identity_match else identifier
                 readiness_match = re.search(
-                    r"\[readiness:\s*([A-Z_]+)", details, flags=re.IGNORECASE
+                    r"\breadiness:\s*([A-Z_]+)", details, flags=re.IGNORECASE
                 )
                 readiness = (
                     readiness_match.group(1).upper()
                     if readiness_match
-                    else registry.get(_canonical_evidence_id(evidence_id), "EVIDENCE_READY")
+                    else registry.get(_canonical_evidence_id(evidence_id), "DISCOVERY_READY")
                 )
                 for value in (identifier, evidence_id):
                     available[value] = readiness
@@ -795,12 +795,9 @@ class UnitManager:
         if not header:
             return result
         columns = [part.strip() for part in header.strip("|").split("|")]
-        # Pre-readiness registries only described route observations.  Inferring
-        # DISCOVERY_READY from those columns would silently downgrade legacy
-        # literature-set entries that never carried a per-source readiness
-        # marker.  New Research runs persist the marker inline in
-        # literature-set.md; a registry may opt into the same contract with an
-        # explicit Readiness column.
+        # Pre-readiness registries only described route observations and cannot
+        # prove locator-bearing full text. An explicit Readiness column may
+        # strengthen or preserve the fail-closed literature-set projection.
         try:
             identity_index = columns.index("Identity")
             readiness_index = columns.index("Readiness")

@@ -141,6 +141,15 @@ class ProductUseAcceptanceTests(unittest.TestCase):
             self.assertIn("PARSED", registry)
             self.assertIn("paper-1.pdf#Results", registry)
             self.assertNotIn("ignored.pdf", registry)
+            resumed_research = ChemicalReviewOrchestrator(root).resume()
+            self.assertEqual(
+                Path(resumed_research.assets["authorized_pdf_dir"]),
+                authorized_pdf.parent,
+            )
+            self.assertIn(
+                str(authorized_pdf),
+                resumed_research.assets["authorized_pdf_paths"],
+            )
 
             orchestrator.accept_research_handoff()
             orchestrator.run_prototype(

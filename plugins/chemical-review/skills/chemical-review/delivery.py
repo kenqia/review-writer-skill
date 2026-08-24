@@ -59,6 +59,7 @@ class FigureAsset:
     asset_type: str = "FIGURE"
     status: str = "SOURCE"
     sha256: str = ""
+    source_digest: str = ""
     resolution: str = ""
     page: str = ""
     bbox: tuple[int, int, int, int] | str = ""
@@ -82,6 +83,8 @@ class JournalProfile:
     guide_digest: str = ""
     requirements: tuple[str, ...] = ()
     adaptation_status: str = "NOT_APPLICABLE"
+    mapped_requirements: tuple[str, ...] = ()
+    unmapped_requirements: tuple[str, ...] = ()
     risk: str = ""
     recovery_action: str = ""
 
@@ -99,17 +102,41 @@ class JournalProfile:
         guide_digest: str,
         requirements: Iterable[str],
         adaptation_status: str = "MET",
+        mapped_requirements: Iterable[str] = (),
+        unmapped_requirements: Iterable[str] = (),
         risk: str = "",
         recovery_action: str = "",
     ) -> "JournalProfile":
+        normalized_requirements = tuple(item.strip() for item in requirements if item.strip())
+        requested_status = adaptation_status.strip()
+        if requested_status not in {"MET", "GAP"}:
+            raise ValueError("A selected journal profile must request MET or GAP.")
+        computed_mapped, computed_unmapped = _journal_requirement_mapping(
+            normalized_requirements
+        )
+        mapped = (
+            tuple(item.strip() for item in mapped_requirements if item.strip())
+            or computed_mapped
+        )
+        unmapped = (
+            tuple(item.strip() for item in unmapped_requirements if item.strip())
+            or computed_unmapped
+        )
+        computed_status = (
+            "GAP"
+            if requested_status == "GAP" or unmapped or not normalized_requirements
+            else "MET"
+        )
         values = cls(
             status="SELECTED",
             target_journal=target_journal.strip(),
             guide_locator=guide_locator.strip(),
             guide_retrieved_at=guide_retrieved_at.strip(),
             guide_digest=guide_digest.strip(),
-            requirements=tuple(item.strip() for item in requirements if item.strip()),
-            adaptation_status=adaptation_status.strip(),
+            requirements=normalized_requirements,
+            adaptation_status=computed_status,
+            mapped_requirements=mapped,
+            unmapped_requirements=unmapped,
             risk=risk.strip(),
             recovery_action=recovery_action.strip(),
         )
@@ -133,13 +160,25 @@ class JournalProfile:
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         if digest != metadata.get("content_digest", ""):
             raise ValueError("journal-guide.md content digest does not match its guide content.")
+        captured_requirements = tuple(requirements) or _derive_journal_requirements(content)
+        adaptation_status = _journal_adaptation_status(captured_requirements)
         return cls.selected(
             target_journal=metadata.get("target_journal", ""),
             guide_locator=metadata.get("source_locator", ""),
             guide_retrieved_at=metadata.get("retrieved_at", ""),
             guide_digest=digest,
-            requirements=requirements or _derive_journal_requirements(content),
-            adaptation_status="MET",
+            requirements=captured_requirements,
+            adaptation_status=adaptation_status,
+            risk=(
+                "Some official-guide requirements are recorded but not mapped to deterministic DOCX styles."
+                if adaptation_status == "GAP"
+                else ""
+            ),
+            recovery_action=(
+                "HUMAN_ACTION_REQUIRED: review the unmapped journal requirements before treating the DOCX as format-ready."
+                if adaptation_status == "GAP"
+                else ""
+            ),
         )
 
     @classmethod
@@ -147,9 +186,9 @@ class JournalProfile:
         """Compare a saved profile with the current guide without overwriting it.
 
         A missing, malformed, or changed guide returns the old profile with a
-        ``GAP`` status and an explicit recovery action. This is intentionally a
-        pure read/reconciliation operation; callers decide when to persist a
-        refreshed profile after human review.
+        ``GAP`` status and an explicit recovery action. The degraded profile is
+        persisted immediately so a cold restart cannot resurrect a stale MET
+        profile; refreshing it still requires an explicit human decision.
         """
 
         root = Path(project_root)
@@ -161,7 +200,7 @@ class JournalProfile:
             return old
         guide_path = root / "journal-guide.md"
         if not guide_path.exists():
-            return replace(
+            gap = replace(
                 old,
                 adaptation_status="GAP",
                 risk="The official journal guide is unavailable.",
@@ -170,10 +209,12 @@ class JournalProfile:
                     "then review and persist a refreshed profile."
                 ),
             )
+            gap.persist(root)
+            return gap
         try:
             current = cls.from_guide_snapshot(root, requirements=old.requirements)
         except (OSError, ValueError):
-            return replace(
+            gap = replace(
                 old,
                 adaptation_status="GAP",
                 risk="The official journal guide is unavailable or invalid.",
@@ -182,12 +223,14 @@ class JournalProfile:
                     "then review and persist a refreshed profile."
                 ),
             )
+            gap.persist(root)
+            return gap
         if (
             current.target_journal != old.target_journal
             or current.guide_locator != old.guide_locator
             or current.guide_digest != old.guide_digest
         ):
-            return replace(
+            gap = replace(
                 old,
                 adaptation_status="GAP",
                 risk="The official journal guide changed since the saved profile was captured.",
@@ -196,7 +239,33 @@ class JournalProfile:
                     "a refreshed journal profile."
                 ),
             )
-        return replace(old, adaptation_status="MET", risk="", recovery_action="")
+            gap.persist(root)
+            return gap
+        if old.adaptation_status == "GAP" or current.adaptation_status == "GAP":
+            gap = replace(
+                old,
+                adaptation_status="GAP",
+                mapped_requirements=current.mapped_requirements,
+                unmapped_requirements=current.unmapped_requirements,
+                risk=(
+                    old.risk
+                    or "Some official-guide requirements are not mapped to deterministic DOCX styles."
+                ),
+                recovery_action=(
+                    old.recovery_action
+                    or "HUMAN_ACTION_REQUIRED: review the unmapped journal requirements before export."
+                ),
+            )
+            gap.persist(root)
+            return gap
+        return replace(
+            old,
+            adaptation_status="MET",
+            mapped_requirements=current.mapped_requirements,
+            unmapped_requirements=current.unmapped_requirements,
+            risk="",
+            recovery_action="",
+        )
 
     @classmethod
     def _load_persisted(cls, path: Path) -> "JournalProfile":
@@ -211,6 +280,7 @@ class JournalProfile:
         for line in _section_value(text, "Requirements").splitlines():
             if line.startswith("- "):
                 requirements.append(line[2:].strip())
+        mapped, unmapped = _journal_requirement_mapping(requirements)
         return cls.selected(
             target_journal=_section_value(text, "Target journal"),
             guide_locator=_section_value(text, "Official guide"),
@@ -218,6 +288,8 @@ class JournalProfile:
             guide_digest=_section_value(text, "Guide digest") or metadata.get("guide_digest", ""),
             requirements=requirements,
             adaptation_status=metadata.get("adaptation_status", "MET"),
+            mapped_requirements=mapped,
+            unmapped_requirements=unmapped,
             risk=_section_value(text, "Risk"),
             recovery_action=_section_value(text, "Recovery action"),
         )
@@ -237,6 +309,12 @@ class JournalProfile:
                 f"## Adaptation status\n{self.adaptation_status}\n\n"
                 f"## Risk\n{self.risk or 'None recorded.'}\n\n"
                 f"## Recovery action\n{self.recovery_action or 'None recorded.'}\n\n"
+                "## Mapped requirements\n"
+                + ("\n".join(f"- {item}" for item in self.mapped_requirements) or "None recorded.")
+                + "\n\n"
+                "## Unmapped requirements\n"
+                + ("\n".join(f"- {item}" for item in self.unmapped_requirements) or "None recorded.")
+                + "\n\n"
                 "## Requirements\n"
                 + ("\n".join(f"- {item}" for item in self.requirements) or "None recorded.")
                 + "\n"
@@ -479,6 +557,7 @@ class FigureInventory:
                 asset_type=values.get("Asset type", "FIGURE"),
                 status=values.get("Status", "SOURCE"),
                 sha256=values.get("SHA-256", ""),
+                source_digest=values.get("Source digest", ""),
                 resolution=values.get("Resolution", ""),
                 page=values.get("Page", ""),
                 bbox=values.get("BBox", ""),
@@ -526,13 +605,40 @@ class FigureInventory:
                 raise ValueError(
                     f"Figure {asset.asset_id} requires claim and citation placement bindings."
                 )
-            if not any(
-                _identity_keys(asset.source_id)
-                & (_identity_keys(row["source_id"]) | _identity_keys(row["identity"]))
+            matching_rows = [
+                row
                 for row in registry
-            ):
+                if _identity_keys(asset.source_id)
+                & (_identity_keys(row["source_id"]) | _identity_keys(row["identity"]))
+            ]
+            if not matching_rows:
                 raise ValueError(
                     f"Figure {asset.asset_id} source identity is absent from source-registry.md."
+                )
+            if not any(
+                row["access_basis"] in {"OPEN_ACCESS", "USER_AUTHORIZED", "INSTITUTION_AUTHORIZED"}
+                and row["full_text"] == "FOUND"
+                and row["parser"] == "PARSED"
+                for row in matching_rows
+            ):
+                raise ValueError(
+                    f"Figure {asset.asset_id} source registry row is not locator-bearing legal evidence."
+                )
+            media_rows = [row for row in matching_rows if row["media_ids"] not in {"", "none"}]
+            if media_rows and not any(
+                asset.asset_id in {item.strip() for item in row["media_ids"].split(";")}
+                for row in media_rows
+            ):
+                raise ValueError(
+                    f"Figure {asset.asset_id} is absent from its source-registry media IDs."
+                )
+            if asset.source_digest and not any(
+                asset.source_digest == row["digest"]
+                for row in matching_rows
+                if row["digest"] and row["digest"] != "none"
+            ):
+                raise ValueError(
+                    f"Figure {asset.asset_id} source digest is absent from its registry row."
                 )
             if asset.asset_type not in ASSET_TYPES:
                 raise ValueError(f"Asset {asset.asset_id} has an unknown type: {asset.asset_type}")
@@ -776,8 +882,21 @@ def _export_qa(blocks, assets: tuple[FigureAsset, ...], profile: JournalProfile)
     references = tuple(dict.fromkeys(evidence_ids))
     sections = tuple(dict.fromkeys(block.section for block in blocks))
     image_assets = tuple(asset for asset in assets if asset.asset_type != "TABLE")
+    image_resolution_status = (
+        "MET" if all(asset.resolution.strip() for asset in image_assets) else "GAP"
+    )
+    journal_mapping = (
+        "NOT_APPLICABLE"
+        if profile.status == "NOT_SELECTED"
+        else "MAPPED_FROM_GUIDE"
+        if profile.adaptation_status == "MET"
+        else "PARTIAL_GAP"
+    )
     return {
-        "status": "MET",
+        "status": "MET"
+        if image_resolution_status == "MET"
+        and journal_mapping in {"NOT_APPLICABLE", "MAPPED_FROM_GUIDE"}
+        else "GAP",
         "asset_count": len(assets),
         "heading_count": 1 + len(sections) + bool(references) + (profile.status == "SELECTED"),
         "reference_count": len(references),
@@ -788,13 +907,9 @@ def _export_qa(blocks, assets: tuple[FigureAsset, ...], profile: JournalProfile)
         "equation_count": sum(
             len(re.findall(r"(?im)^\s*(?:Equation|Eq\.?):", block.text)) for block in blocks
         ),
-        "image_resolution_status": "MET"
-        if all(asset.resolution.strip() for asset in image_assets)
-        else "GAP",
+        "image_resolution_status": image_resolution_status,
         "layout_status": "MET",
-        "journal_format_mapping": (
-            "NOT_APPLICABLE" if profile.status == "NOT_SELECTED" else "MAPPED_FROM_GUIDE"
-        ),
+        "journal_format_mapping": journal_mapping,
     }
 
 
@@ -812,6 +927,7 @@ def _render_figure_asset(asset: FigureAsset) -> str:
         f"BBox: {bbox}\n"
         f"Caption: {asset.caption}\n"
         f"SHA-256: {asset.sha256}\n"
+        f"Source digest: {asset.source_digest}\n"
         f"Resolution: {asset.resolution}\n"
         f"Extraction status: {asset.extraction_status}\n"
         f"Target section: {asset.target_section}\n"
@@ -890,8 +1006,15 @@ def _derive_journal_requirements(content: str) -> tuple[str, ...]:
         "caption",
         "word limit",
         "page limit",
+        "pages",
+        "words",
+        "length",
         "margin",
         "font",
+        "spacing",
+        "citation",
+        "resolution",
+        "dpi",
         "format",
         "heading",
     )
@@ -904,6 +1027,70 @@ def _derive_journal_requirements(content: str) -> tuple[str, ...]:
         if len(requirements) == 24:
             break
     return tuple(requirements)
+
+
+def _journal_adaptation_status(requirements: Iterable[str]) -> str:
+    mapped, unmapped = _journal_requirement_mapping(requirements)
+    return "MET" if mapped and not unmapped else "GAP"
+
+
+def _journal_requirement_mapping(
+    requirements: Iterable[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Classify captured guide statements against implemented DOCX behavior."""
+
+    mapped: list[str] = []
+    unmapped: list[str] = []
+    for raw in requirements:
+        requirement = raw.strip()
+        if not requirement:
+            continue
+        text = re.sub(r"\s+", " ", requirement.lower())
+        unsupported = (
+            "word limit",
+            "page limit",
+            "maximum words",
+            "maximum pages",
+            "abstract",
+            "citation",
+            "reference",
+            "resolution",
+            "graphical abstract",
+            "title",
+            "heading",
+            "figure",
+            "scheme",
+            "table",
+            "caption",
+        )
+        if any(marker in text for marker in unsupported) or re.search(
+            r"(?:\b\d[\d,]*\s*words?\b|\b\d+(?:\.\d+)?\s*pages?\b|\b\d+\s*dpi\b)",
+            text,
+        ):
+            unmapped.append(requirement)
+            continue
+        margin_rule = re.search(
+            r"(?:(?:top|bottom|left|right)\s+)?margin(?:s)?(?:\s+(?:of|are|is))?"
+            r"\s*[:=]?\s*\d+(?:\.\d+)?\s*(?:mm|cm|in|inch(?:es)?)",
+            text,
+        )
+        font_rule = re.search(
+            r"^(?:font|typeface)\s*[:=]?\s*[a-z][a-z0-9 ._-]{1,48}?"
+            r"(?:\s+\d+(?:\.\d+)?\s*pt)?[.;]?$",
+            text,
+        )
+        font_size_rule = re.search(
+            r"^(?:font size|text size)\s*[:=]?\s*\d+(?:\.\d+)?\s*pt[.;]?$",
+            text,
+        )
+        spacing_rule = "spacing" in text and any(
+            marker in text for marker in ("single", "double", "1.5")
+        )
+        if margin_rule or font_rule or font_size_rule or spacing_rule:
+            mapped.append(requirement)
+        else:
+            unmapped.append(requirement)
+    return tuple(mapped), tuple(unmapped)
 
 
 def _journal_format_settings(profile: JournalProfile) -> _JournalFormatSettings:
@@ -1001,7 +1188,23 @@ def _load_source_registry(project_root: Path) -> tuple[dict[str, str], ...]:
         cells = tuple(part.strip() for part in line.strip("|").split("|"))
         if len(cells) != len(headers):
             continue
-        rows.append({"source_id": cells[source_id_index], "identity": cells[identity_index]})
+        def _column(name: str) -> str:
+            try:
+                return cells[headers.index(name)]
+            except ValueError:
+                return ""
+
+        rows.append(
+            {
+                "source_id": cells[source_id_index],
+                "identity": cells[identity_index],
+                "access_basis": _column("Access basis"),
+                "full_text": _column("Full text"),
+                "parser": _column("Parser"),
+                "media_ids": _column("Media IDs"),
+                "digest": _column("Digest"),
+            }
+        )
     return tuple(rows)
 
 
@@ -1023,7 +1226,10 @@ def _stable_locator(value: str) -> bool:
     normalized = value.lower()
     return bool(
         re.search(
-            r"(?:#|\bp(?:age)?\.?\s*\d+|\bsection\s*[:#]?\s*\w+|\b(?:figure|scheme|table)\s*\d+)",
+            r"(?:(?:\bp(?:age)?|\bpg)(?:\s+|\.|:|#)\s*\d+|\bsection\s*[:#]?\s*[a-z0-9.-]+|"
+            r"\b(?:fig(?:ure)?|scheme|table)\s*#?\s*\d+|"
+            r"#(?:page|p|section|fig|figure|scheme|table)[=:_\s-]*[a-z0-9.-]+|"
+            r"#(?:results|methods|introduction|discussion|references)\b)",
             normalized,
         )
     )

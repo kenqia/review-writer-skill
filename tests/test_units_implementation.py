@@ -364,6 +364,14 @@ class UnitImplementationTests(unittest.TestCase):
                 project_dir,
                 (self._unit("section-draft", kind="section_claim"),),
             )
+            literature_path = Path(project_dir, "literature-set.md")
+            literature_path.write_text(
+                literature_path.read_text(encoding="utf-8").replace(
+                    "readiness: DISCOVERY_READY",
+                    "readiness: EVIDENCE_READY",
+                ),
+                encoding="utf-8",
+            )
             orchestrator.submit_review_unit_result(
                 UnitResult(
                     unit_id="section-draft",
@@ -414,32 +422,38 @@ class UnitImplementationTests(unittest.TestCase):
             ):
                 self.assertIn(term, content)
 
-    def test_legacy_literature_without_inline_readiness_keeps_evidence_compatibility(self):
-        """Old literature-set entries remain evidence-ready until explicitly downgraded."""
+    def test_literature_without_inline_readiness_cannot_support_source_fact(self):
         with TemporaryDirectory() as project_dir:
             orchestrator = self._implementation_project(
                 project_dir,
                 (self._unit("legacy-source-fact", kind="section_claim"),),
             )
-
-            submitted = orchestrator.submit_review_unit_result(
-                UnitResult(
-                    unit_id="legacy-source-fact",
-                    completion_evidence="A legacy fixture supplied a source-backed claim.",
-                    findings=("The selected legacy fixture reports the bounded finding.",),
-                    claims=(
-                        ClaimBlock(
-                            section="Evidence notes",
-                            claim_level="SOURCE_FACT",
-                            contribution_type="explanation",
-                            text="The selected study reports the bounded finding.",
-                            evidence_ids=("paper-1",),
-                        ),
-                    ),
-                    remaining_uncertainty="The legacy fixture does not record per-source readiness.",
-                )
+            literature_path = Path(project_dir, "literature-set.md")
+            literature_path.write_text(
+                literature_path.read_text(encoding="utf-8").replace(
+                    "; readiness: DISCOVERY_READY", ""
+                ),
+                encoding="utf-8",
             )
-            self.assertEqual(submitted.status, "READY_FOR_NEXT_PHASE")
+
+            with self.assertRaisesRegex(ValueError, "SOURCE_FACT.*EVIDENCE_READY"):
+                orchestrator.submit_review_unit_result(
+                    UnitResult(
+                        unit_id="legacy-source-fact",
+                        completion_evidence="A legacy fixture supplied a source-backed claim.",
+                        findings=("The selected legacy fixture reports the bounded finding.",),
+                        claims=(
+                            ClaimBlock(
+                                section="Evidence notes",
+                                claim_level="SOURCE_FACT",
+                                contribution_type="explanation",
+                                text="The selected study reports the bounded finding.",
+                                evidence_ids=("paper-1",),
+                            ),
+                        ),
+                        remaining_uncertainty="The legacy fixture does not record per-source readiness.",
+                    )
+                )
 
     def test_later_merge_preserves_and_surfaces_direct_human_content_edit(self):
         with TemporaryDirectory() as project_dir:
