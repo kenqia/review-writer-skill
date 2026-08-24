@@ -32,7 +32,7 @@ SEARCH_PATHS = (
 )
 DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.I)
 _SENSITIVE_QUERY_RE = re.compile(
-    r"([?&#;](?:api[_-]?key|access[_-]?token|auth(?:orization)?|password|secret|token|key|sig(?:nature)?|bearer|credential|x-amz-(?:credential|signature|security-token)|x-goog-(?:credential|signature)|awsaccesskeyid)(?:=|:))[^&#;\s]+",
+    r"([?&#;](?:api[_-]?key|access[_-]?token|auth(?:orization)?|password|secret|token|key|sig(?:nature)?|bearer|credential|x-amz-(?:credential|signature|security-token)|x-goog-(?:credential|signature)|aws[_-]?access[_-]?key[_-]?id)(?:=|:))[^&#;\s]+",
     re.I,
 )
 _SENSITIVE_HEADER_RE = re.compile(r"(\b(?:authorization|x-api-key)\s*:\s*(?:bearer\s+)?)[^\s,;]+", re.I)

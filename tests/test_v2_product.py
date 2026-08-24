@@ -216,6 +216,8 @@ class V2ProductTests(unittest.TestCase):
         self.assertNotIn("DOUBLEENCODED", research._safe_error("GET https://provider.invalid/redirect?next=https%253A%252F%252Fpublisher.example%252Fpaper.pdf%253Fsig%253DDOUBLEENCODED"))
         self.assertNotIn("ENCUSER", research._safe_error("GET https%3A%2F%2FENCUSER%3AENCPASS%40provider.invalid%2Fpaper.pdf"))
         self.assertNotIn("HTTPSECRET", research._safe_error("GET https://provider.invalid/paper.pdf?download=1;sig=HTTPSECRET"))
+        self.assertNotIn("AWSSECRET", research._safe_error("GET https://provider.invalid/paper.pdf?aws_access_key_id=AWSSECRET"))
+        self.assertNotIn("AWSHYPHENSECRET", research._safe_error("GET https://provider.invalid/paper.pdf?aws-access-key-id=AWSHYPHENSECRET"))
 
         class HttpErrorTransport:
             def request(self, method, url, *, headers, body=None, timeout):
