@@ -888,13 +888,14 @@ class ResearchStage:
     def _discover(self, brief: str, fixture: Mapping[str, Any], adapters: Sequence[Any] | None, *, terms: Sequence[str] = ()) -> list[Paper]:
         if fixture.get("papers"):
             papers = [_paper_from_mapping(row) for row in fixture["papers"] if isinstance(row, Mapping)]
+            fixture_provenance: dict[str, set[str]] = {}
+            for paper in papers:
+                key = paper.doi.lower() if paper.doi else paper.identifier.lower()
+                fixture_provenance.setdefault(key, set()).add(paper.provider or "fixture")
             self._discovery_stats = {
                 "raw_hits": len(papers),
                 "provider_query_coverage": {str(getattr(paper, "provider", "fixture")): ["fixture"] for paper in papers},
-                "provider_provenance": {
-                    (paper.doi.lower() if paper.doi else paper.identifier.lower()): [paper.provider or "fixture"]
-                    for paper in papers
-                },
+                "provider_provenance": {key: sorted(values) for key, values in fixture_provenance.items()},
             }
             return papers
         core_claims = _core_claims(brief)
