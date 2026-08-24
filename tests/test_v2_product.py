@@ -218,6 +218,12 @@ class V2ProductTests(unittest.TestCase):
         self.assertNotIn("HTTPSECRET", research._safe_error("GET https://provider.invalid/paper.pdf?download=1;sig=HTTPSECRET"))
         self.assertNotIn("AWSSECRET", research._safe_error("GET https://provider.invalid/paper.pdf?aws_access_key_id=AWSSECRET"))
         self.assertNotIn("AWSHYPHENSECRET", research._safe_error("GET https://provider.invalid/paper.pdf?aws-access-key-id=AWSHYPHENSECRET"))
+        self.assertNotIn("ACCESSSECRET", research._safe_error("GET https://provider.invalid/paper.pdf?accessKey=ACCESSSECRET"))
+        self.assertNotIn("XAPISECRET", research._safe_error("GET https://provider.invalid/paper.pdf?x-api-key=XAPISECRET"))
+        self.assertNotIn("AMZSECRET", research._safe_error("GET https://provider.invalid/paper.pdf?x-amz-securitytoken=AMZSECRET"))
+        self.assertNotIn("AUTHSECRET", research._safe_error("GET https://provider.invalid/paper.pdf?authToken=AUTHSECRET"))
+        self.assertNotIn("FOOTOKENSECRET", research._safe_error("GET https://provider.invalid/paper.pdf?foo-token=FOOTOKENSECRET"))
+        self.assertNotIn("BASICSECRET", research._safe_error("request failed with Authorization: Basic BASICSECRET"))
 
         class HttpErrorTransport:
             def request(self, method, url, *, headers, body=None, timeout):
@@ -273,10 +279,26 @@ class V2ProductTests(unittest.TestCase):
             research._persisted_url("https://oa.example/paper.pdf?aws_access_key_id=URLSECRET"),
             "",
         )
+        self.assertEqual(research._persisted_url("relative/paper.pdf"), "")
+        self.assertEqual(research._url_status("relative/paper.pdf"), "INVALID_URL")
         self.assertEqual(
             research._persisted_url("https://oa.example/redirect?next=https%2525252525253A%2525252525252F%2525252525252Fpublisher.example%2525252525252Fpaper.pdf%2525252525253Fsig%2525252525253DDEEPSECRET"),
             "",
         )
+
+    def test_provider_status_scrubs_injected_adapter_errors(self):
+        research = load_module("v2_provider_status_scrub", V2_SKILLS["chemical-review-research"] / "research.py")
+
+        class LeakyAdapter:
+            name = "OpenAlex"
+            last_error = "GET https://provider.invalid/paper.pdf?authToken=INJECTEDSECRET"
+
+        with tempfile.TemporaryDirectory() as temp:
+            stage = research.ResearchStage(Path(temp))
+            stage._ensure_dirs()
+            stage._write_provider_status((LeakyAdapter(),), ())
+            status = (Path(temp) / "research" / "provider-status.md").read_text(encoding="utf-8")
+            self.assertNotIn("INJECTEDSECRET", status)
         self.assertEqual(
             research._persisted_url("https://oa.example/redirect?next=https%3A%2F%2Fpublisher.example%2Fpaper.pdf%3Ftoken%3DURLSECRET"),
             "",

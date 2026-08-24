@@ -32,10 +32,11 @@ SEARCH_PATHS = (
 )
 DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.I)
 _SENSITIVE_QUERY_RE = re.compile(
-    r"([?&#;](?:api[_-]?key|access[_-]?token|auth(?:orization)?|password|secret|token|key|sig(?:nature)?|bearer|credential|x-amz-(?:credential|signature|security-token)|x-goog-(?:credential|signature)|aws[_-]?access[_-]?key[_-]?id)(?:=|:))[^&#;\s]+",
+    r"([?&#;](?:api[_-]?key|access[_-]?token|access[_-]?key(?:[_-]?id)?|auth(?:orization)?|password|secret|token|key|sig(?:nature)?|bearer|credential|x[_-]?api[_-]?key|x-amz-(?:credential|signature|security-token)|x-goog-(?:credential|signature)|aws[_-]?access[_-]?key[_-]?id)(?:=|:))[^&#;\s]+",
     re.I,
 )
-_SENSITIVE_HEADER_RE = re.compile(r"(\b(?:authorization|x-api-key)\s*:\s*(?:bearer\s+)?)[^\s,;]+", re.I)
+_URL_PARAM_RE = re.compile(r"([?&#;])([^=:#\s&#;]+)([=:])([^&#;\s]+)", re.I)
+_SENSITIVE_HEADER_RE = re.compile(r"(\b(?:authorization|x-api-key)\s*:\s*(?:(?:bearer|basic)\s+)?)[^\s,;]+", re.I)
 _SENSITIVE_USERINFO_RE = re.compile(r"(\bhttps?://)[^\s/?#]+@", re.I)
 _SENSITIVE_URL_KEYS = {
     "api_key", "apikey", "access_token", "auth", "authorization", "credential",
@@ -626,7 +627,9 @@ class ResearchStage:
         for capability, provider, recovery in rows:
             configured_here = provider in configured or (provider == "MinerU" and MinerUParser().configured)
             adapter = next((item for item in (*discovery, *full_text) if getattr(item, "name", "") == provider), None)
-            failure = getattr(adapter, "last_error", "") if adapter is not None else ""
+            raw_failure = getattr(adapter, "last_error", "") if adapter is not None else ""
+            credentials = adapter._credential_values() if adapter is not None and hasattr(adapter, "_credential_values") else ()
+            failure = _safe_error(str(raw_failure), secrets=credentials) if raw_failure else ""
             action = "Retry the configured route; no credential value is persisted." if failure else recovery
             lines.append(f"| {capability} | {provider} | {'YES' if configured_here else 'NO'} | {failure or 'none recorded'} | {action} |")
         (self.root / "provider-status.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -879,6 +882,7 @@ def _safe_error(value: str, *, secrets: Sequence[str] = ()) -> str:
     redacted, exhausted = _unquote_layers(value)
     if exhausted:
         return "[REDACTED_ENCODED_ERROR]"
+    redacted = _URL_PARAM_RE.sub(_redact_url_param, redacted)
     redacted = _SENSITIVE_QUERY_RE.sub(r"\1[REDACTED]", redacted)
     redacted = _SENSITIVE_HEADER_RE.sub(r"\1[REDACTED]", redacted)
     redacted = _SENSITIVE_USERINFO_RE.sub(r"\1[REDACTED]@", redacted)
@@ -891,6 +895,12 @@ def _safe_error(value: str, *, secrets: Sequence[str] = ()) -> str:
     return redacted[:500]
 
 
+def _redact_url_param(match: re.Match[str]) -> str:
+    if not _sensitive_url_key(match.group(2)):
+        return match.group(0)
+    return f"{match.group(1)}{match.group(2)}{match.group(3)}[REDACTED]"
+
+
 def _persisted_url(value: str) -> str:
     """Return a URL safe for Markdown/cache, withholding credential-bearing routes."""
     if not value.strip():
@@ -900,6 +910,8 @@ def _persisted_url(value: str) -> str:
         query = parse_qsl(parsed.query, keep_blank_values=True)
     except ValueError:
         return ""
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return ""
     if parsed.username or parsed.password or _url_contains_credentials(value):
         return ""
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
@@ -908,7 +920,16 @@ def _persisted_url(value: str) -> str:
 def _url_status(value: str) -> str:
     if not value.strip():
         return "NOT_FOUND"
-    return "LEGAL_URL" if _persisted_url(value) else "WITHHELD_CREDENTIAL_BEARING_URL"
+    safe = _persisted_url(value)
+    if safe:
+        return "LEGAL_URL"
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return "INVALID_URL"
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return "INVALID_URL"
+    return "WITHHELD_CREDENTIAL_BEARING_URL"
 
 
 def _sensitive_url_key(key: str) -> bool:
