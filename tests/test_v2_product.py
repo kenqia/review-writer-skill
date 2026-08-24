@@ -268,6 +268,14 @@ class V2ProductTests(unittest.TestCase):
             "",
         )
         self.assertEqual(
+            research._persisted_url("https://oa.example/paper.pdf?aws_access_key_id=URLSECRET"),
+            "",
+        )
+        self.assertEqual(
+            research._persisted_url("https://oa.example/redirect?next=https%2525252525253A%2525252525252F%2525252525252Fpublisher.example%2525252525252Fpaper.pdf%2525252525253Fsig%2525252525253DDEEPSECRET"),
+            "",
+        )
+        self.assertEqual(
             research._persisted_url("https://oa.example/redirect?next=https%3A%2F%2Fpublisher.example%2Fpaper.pdf%3Ftoken%3DURLSECRET"),
             "",
         )

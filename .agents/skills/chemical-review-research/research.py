@@ -40,7 +40,7 @@ _SENSITIVE_USERINFO_RE = re.compile(r"(\bhttps?://)[^\s/?#]+@", re.I)
 _SENSITIVE_URL_KEYS = {
     "api_key", "apikey", "access_token", "auth", "authorization", "credential",
     "key", "secret", "sig", "signature", "token", "x-api-key", "x-amz-credential", "x-amz-signature",
-    "x-amz-security-token", "x-goog-credential", "x-goog-signature", "awsaccesskeyid",
+    "x-amz-security-token", "x-goog-credential", "x-goog-signature", "awsaccesskeyid", "aws_access_key_id",
     "bearer",
 }
 
@@ -876,12 +876,9 @@ def _download_priority(paper: Paper) -> int:
 
 
 def _safe_error(value: str, *, secrets: Sequence[str] = ()) -> str:
-    redacted = value
-    for _ in range(8):
-        decoded = unquote(redacted)
-        if decoded == redacted:
-            break
-        redacted = decoded
+    redacted, exhausted = _unquote_layers(value)
+    if exhausted:
+        return "[REDACTED_ENCODED_ERROR]"
     redacted = _SENSITIVE_QUERY_RE.sub(r"\1[REDACTED]", redacted)
     redacted = _SENSITIVE_HEADER_RE.sub(r"\1[REDACTED]", redacted)
     redacted = _SENSITIVE_USERINFO_RE.sub(r"\1[REDACTED]@", redacted)
@@ -920,8 +917,18 @@ def _sensitive_url_key(key: str) -> bool:
     known = {value.replace("-", "_") for value in _SENSITIVE_URL_KEYS}
     return lowered in _SENSITIVE_URL_KEYS or normalized in known or any(
         marker in normalized
-        for marker in ("token", "signature", "credential", "secret", "accesskey", "api_key", "apikey", "authorization")
+        for marker in ("token", "signature", "credential", "secret", "accesskey", "access_key", "api_key", "apikey", "authorization")
     )
+
+
+def _unquote_layers(value: str, *, limit: int = 32) -> tuple[str, bool]:
+    decoded = value
+    for _ in range(limit):
+        next_value = unquote(decoded)
+        if next_value == decoded:
+            return decoded, False
+        decoded = next_value
+    return decoded, True
 
 
 def _url_contains_credentials(value: str, *, depth: int = 0) -> bool:
@@ -930,7 +937,9 @@ def _url_contains_credentials(value: str, *, depth: int = 0) -> bool:
         # Unknown-depth nested URLs are withheld rather than risk persisting a
         # credential hidden behind another redirect/encoding layer.
         return True
-    decoded = unquote(value)
+    decoded, exhausted = _unquote_layers(value)
+    if exhausted:
+        return True
     if _SENSITIVE_QUERY_RE.search(decoded) or _SENSITIVE_HEADER_RE.search(decoded):
         return True
     try:
