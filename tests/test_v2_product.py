@@ -418,6 +418,29 @@ class V2ProductTests(unittest.TestCase):
             self.assertEqual(manifest["coverage"]["included"], 0)
             self.assertEqual(manifest["coverage"]["manual_queue"], 0)
 
+    def test_unrelated_explicit_claim_binding_is_excluded_even_when_title_is_chemistry(self):
+        research = load_module("v2_unrelated_claim_binding", V2_SKILLS["chemical-review-research"] / "research.py")
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "review-brief.md").write_text(
+                "---\nconfirmed: true\n---\n\nTopic: nickel coupling\n\n## Core-claim candidates\n- Ligand electronics alter selectivity.\n",
+                encoding="utf-8",
+            )
+            fixture_dir = project / "fixtures"
+            fixture_dir.mkdir()
+            (fixture_dir / "research.json").write_text(json.dumps({"papers": [{
+                "identifier": "doi:10.1/unrelated", "doi": "10.1/unrelated",
+                "title": "Nickel coupling chemistry", "abstract": "Nickel coupling chemistry",
+                "claim_relevance": "Quantum computing unrelated claim.",
+                "full_text_url": "https://oa.example/unrelated.pdf", "full_text_direct": True,
+                "access_basis": "OPEN_ACCESS",
+            }]}), encoding="utf-8")
+            result = research.ResearchStage(project).run(fixture_dir=fixture_dir)
+            manifest = json.loads((project / "research" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(result.status, "RESEARCH_GAP")
+            self.assertEqual(manifest["coverage"]["included"], 0)
+            self.assertEqual(manifest["coverage"]["manual_queue"], 0)
+
     def test_credential_bearing_full_text_url_is_withheld_with_visible_recovery_action(self):
         research = load_module("v2_signed_url_route", V2_SKILLS["chemical-review-research"] / "research.py")
         with tempfile.TemporaryDirectory() as temp:
@@ -666,6 +689,18 @@ class V2ProductTests(unittest.TestCase):
             sections, _locators, _note = research.MinerUParser(command="mineru").parse(pdf, "doi:10.1/x")
 
         self.assertEqual(sections, ("# Parsed paper\n\nResults",))
+
+    def test_mineru_progress_only_stdout_is_not_structured_success(self):
+        research = load_module("v2_mineru_progress_only", V2_SKILLS["chemical-review-research"] / "research.py")
+
+        def fake_run(command, **kwargs):
+            return research.subprocess.CompletedProcess(command, 0, stdout="[upload] paper.pdf\n[poll] done", stderr="")
+
+        with tempfile.TemporaryDirectory() as temp, patch.object(research.subprocess, "run", side_effect=fake_run):
+            pdf = Path(temp) / "paper.pdf"
+            pdf.write_bytes(b"%PDF fixture")
+            with self.assertRaises(research.ProviderUnavailable):
+                research.MinerUParser(command="mineru").parse(pdf, "doi:10.1/x")
 
     def test_mineru_keeps_single_pdf_wrapper_compatibility_after_batch_attempt(self):
         research = load_module("v2_mineru_wrapper_compatibility", V2_SKILLS["chemical-review-research"] / "research.py")
@@ -960,7 +995,9 @@ class V2ProductTests(unittest.TestCase):
             (project / "review-brief.md").write_text("---\nconfirmed: true\nrevision: 1\n---\n\nTopic: molecular discovery\n", encoding="utf-8")
             stage = research.ResearchStage(project)
             stage._ensure_dirs()
-            source = {"identifier": "doi:10.1234/verified", "doi": "10.1234/verified", "title": "Verified", "source_id": "verified", "evidence_fields": {"key_result": "4 confirmed molecules"}, "locators": ["paper.pdf#page=2"]}
+            pdf = project / "research" / "fulltext" / "paper.pdf"
+            pdf.write_bytes(b"%PDF verified")
+            source = {"identifier": "doi:10.1234/verified", "doi": "10.1234/verified", "title": "Verified", "source_id": "verified", "local_path": str(pdf), "digest": research._digest(pdf), "evidence_fields": {"key_result": "4 confirmed molecules"}, "locators": ["paper.pdf#page=2"]}
             stage._write_manifest_file({"brief_revision": 1, "sources": [source], "evidence_matrix": {"evidence_levels": {}}})
             promoted = stage.promote_evidence("doi:10.1234/verified", locators=("paper.pdf#page=2",), verifier="human-editor")
             self.assertEqual(promoted["evidence_fields"]["evidence_level"], "VERIFIED")

@@ -147,6 +147,13 @@ def _openalex_abstract(value: object) -> str:
     return " ".join(token for _position, token in sorted(words))
 
 
+def _looks_like_mineru_progress(value: str) -> bool:
+    lines = [line.strip().lower() for line in value.splitlines() if line.strip()]
+    if not lines:
+        return False
+    return all(line.startswith(("[upload", "[poll", "[convert", "[process", "progress")) for line in lines)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -473,7 +480,9 @@ class MinerUParser:
                     completed = subprocess.run(input_command, check=False, capture_output=True, text=True, timeout=180)
                     # Batch parsers commonly print progress logs to stdout;
                     # structured Markdown is authoritative when it exists.
-                    output = self._markdown_output(Path(output_dir), pdf) or completed.stdout.strip()
+                    structured = self._markdown_output(Path(output_dir), pdf)
+                    stdout = completed.stdout.strip()
+                    output = structured or (stdout if not _looks_like_mineru_progress(stdout) else "")
                     if completed.returncode == 0 and output:
                         sections = tuple(part.strip() for part in output.replace("\r\n", "\n").split("\f") if part.strip())
                         return sections, tuple(f"{pdf.name}#page={i}" for i in range(1, len(sections) + 1)), "MinerU command"
@@ -483,7 +492,8 @@ class MinerUParser:
                     # contract (`--input-dir`) the first attempt.
                     legacy_command = list(command) + [str(pdf)]
                     legacy = subprocess.run(legacy_command, check=False, capture_output=True, text=True, timeout=180)
-                    legacy_output = legacy.stdout.strip() or self._markdown_output(Path(output_dir), pdf)
+                    legacy_stdout = legacy.stdout.strip()
+                    legacy_output = self._markdown_output(Path(output_dir), pdf) or (legacy_stdout if not _looks_like_mineru_progress(legacy_stdout) else "")
                     if legacy.returncode != 0 or not legacy_output:
                         raise ProviderUnavailable("MinerU command failed; inspect parser degradation")
                     sections = tuple(part.strip() for part in legacy_output.replace("\r\n", "\n").split("\f") if part.strip())
@@ -696,7 +706,7 @@ class ResearchStage:
     def _configuration_preflight(self, choice: str | None) -> None:
         discovery = _configured_discovery_adapters()
         parser = MinerUParser()
-        rows = self._configuration_rows(discovery_adapters=discovery, parser=parser)
+        rows = self._configuration_rows(discovery_adapters=discovery, parser=parser, probe_optional=True)
         missing = [row for row in rows if row.get("required") == "true" and row["status"] not in {"READY", "USABLE_RESULTS"}]
         report_path = self.root / "configuration-preflight.md"
         previous = ""
@@ -723,7 +733,7 @@ class ResearchStage:
                 f"Research configuration choice required; review {report_path} and choose one of: {', '.join(CONFIGURATION_CHOICES)}"
             )
 
-    def _configuration_rows(self, *, discovery_adapters: Sequence[Any] | None = None, parser: MinerUParser | None = None) -> list[dict[str, str]]:
+    def _configuration_rows(self, *, discovery_adapters: Sequence[Any] | None = None, parser: MinerUParser | None = None, probe_optional: bool = False) -> list[dict[str, str]]:
         network = _env_enabled("CHEMICAL_REVIEW_ENABLE_NETWORK")
         discovery_adapters = tuple(discovery_adapters) if discovery_adapters is not None else _configured_discovery_adapters()
         if network and discovery_adapters:
@@ -731,6 +741,7 @@ class ResearchStage:
         else:
             discovery_status = "MISSING"
         mineru_status, mineru_note = self._mineru_probe(parser or MinerUParser())
+        optional = self._probe_optional_capabilities() if network and probe_optional else {}
         return [
             {
                 "capability": "Metadata discovery (OpenAlex / Semantic Scholar / Crossref)",
@@ -741,28 +752,28 @@ class ResearchStage:
             },
             {
                 "capability": "Chemistry term expansion (PubChem / ChEBI)",
-                "status": "CONFIGURED" if network else "OPTIONAL_MISSING",
+                "status": optional.get("PubChem / ChEBI", "CONFIGURED" if network else "OPTIONAL_MISSING"),
                 "required": "false",
                 "impact": "Without the network route, synonym and entity expansion is unavailable.",
                 "recovery": "Enable the network route or accept a narrower, manually supplied vocabulary.",
             },
             {
                 "capability": "Legal full-text location (Europe PMC)",
-                "status": "CONFIGURED" if network else "OPTIONAL_MISSING",
+                "status": optional.get("Europe PMC", "CONFIGURED" if network else "OPTIONAL_MISSING"),
                 "required": "false",
                 "impact": "Without the route, Research cannot automatically locate open full text.",
                 "recovery": "Enable the network route or use legal user downloads recorded in download-requests.md.",
             },
             {
                 "capability": "Additional open-access full text (Unpaywall)",
-                "status": "CONFIGURED" if network and os.environ.get("UNPAYWALL_EMAIL", "").strip() else "OPTIONAL_MISSING",
+                "status": optional.get("Unpaywall", "CONFIGURED" if network and os.environ.get("UNPAYWALL_EMAIL", "").strip() else "OPTIONAL_MISSING"),
                 "required": "false",
                 "impact": "Without UNPAYWALL_EMAIL, Unpaywall lookup is skipped.",
                 "recovery": "Set UNPAYWALL_EMAIL in an untracked env file, or accept reduced full-text coverage.",
             },
             {
                 "capability": "Additional repository full text (CORE)",
-                "status": "CONFIGURED" if network and os.environ.get("CORE_API_KEY", "").strip() else "OPTIONAL_MISSING",
+                "status": optional.get("CORE", "CONFIGURED" if network and os.environ.get("CORE_API_KEY", "").strip() else "OPTIONAL_MISSING"),
                 "required": "false",
                 "impact": "Without CORE_API_KEY, CORE lookup is skipped.",
                 "recovery": "Set CORE_API_KEY in an untracked env file, or accept reduced full-text coverage.",
@@ -775,6 +786,43 @@ class ResearchStage:
                 "recovery": "Set MINERU_COMMAND or MINERU_ENDPOINT, place an authorized PDF in research/inbox/authorized-pdfs/, and rerun the preflight (MINERU_TOKEN only in an untracked env file).",
             },
         ]
+
+    def _probe_optional_capabilities(self) -> dict[str, str]:
+        """Make real bounded calls for optional routes during the preflight."""
+        results: dict[str, str] = {}
+
+        def probe(name: str, callback: Any) -> None:
+            try:
+                value = callback()
+                results[name] = "USABLE_RESULTS" if value else "REACHABLE"
+            except Exception:
+                results[name] = "FAILED"
+
+        entities = _configured_entity_adapters()
+        if entities:
+            entity_results = []
+            for adapter in entities:
+                try:
+                    entity_results.append(bool(adapter.expand("water")))
+                except Exception:
+                    entity_results.append(False)
+            results["PubChem / ChEBI"] = "USABLE_RESULTS" if any(entity_results) else "FAILED"
+        else:
+            results["PubChem / ChEBI"] = "OPTIONAL_MISSING"
+        full_text = _configured_full_text_adapters()
+        europe = next((adapter for adapter in full_text if getattr(adapter, "name", "") == "Europe PMC"), None)
+        probe("Europe PMC", lambda: europe.locate("10.1038/s41586-023-06747-5") if europe else ())
+        unpaywall = next((adapter for adapter in full_text if getattr(adapter, "name", "") == "Unpaywall"), None)
+        if unpaywall:
+            probe("Unpaywall", lambda: unpaywall.locate("10.1038/s41586-023-06747-5"))
+        else:
+            results["Unpaywall"] = "OPTIONAL_MISSING"
+        core = next((adapter for adapter in full_text if getattr(adapter, "name", "") == "CORE"), None)
+        if core:
+            probe("CORE", lambda: core.locate("10.1038/s41586-023-06747-5"))
+        else:
+            results["CORE"] = "OPTIONAL_MISSING"
+        return results
 
     def _probe_discovery(self, adapters: Sequence[Any]) -> tuple[str, str]:
         reachable = 0
@@ -803,8 +851,10 @@ class ResearchStage:
             return "NOT_VERIFIED", "MinerU is configured but no authorized PDF is available for a real parse probe; readiness is not claimed."
         probe = candidates[0]
         try:
-            parser.parse(probe, "configuration-preflight")
-        except ProviderUnavailable as exc:
+            result = parser.parse(probe, "configuration-preflight")
+            if not isinstance(result, tuple) or len(result) != 3 or not result[0] or not result[1]:
+                raise ProviderUnavailable("MinerU real PDF parse probe returned no structured sections/locators")
+        except Exception as exc:
             return "FAILED", f"MinerU is configured but the real PDF parse probe failed: {_safe_error(str(exc))}"
         return "READY", f"MinerU real PDF parse probe passed for {probe.name}."
 
@@ -841,7 +891,10 @@ class ResearchStage:
             self._discovery_stats = {
                 "raw_hits": len(papers),
                 "provider_query_coverage": {str(getattr(paper, "provider", "fixture")): ["fixture"] for paper in papers},
-                "provider_provenance": {},
+                "provider_provenance": {
+                    (paper.doi.lower() if paper.doi else paper.identifier.lower()): [paper.provider or "fixture"]
+                    for paper in papers
+                },
             }
             return papers
         core_claims = _core_claims(brief)
@@ -881,6 +934,7 @@ class ResearchStage:
         doi_index: dict[str, str] = {}
         title_index: dict[str, str] = {}
         for paper in papers:
+            paper = replace(paper, access_basis=_legal_access_basis(paper.access_basis))
             doi_key = paper.doi.strip().lower().removeprefix("https://doi.org/")
             title_key = _title_candidate_key(paper)
             key = doi_index.get(doi_key) if doi_key else None
@@ -959,7 +1013,7 @@ class ResearchStage:
                     continue
                 if locations:
                     location = locations[0]
-                    located.append(replace(paper, full_text_url=location.url, full_text_direct=location.direct_pdf, access_basis=location.access_basis, provider=f"{paper.provider}+{getattr(adapter, 'name', 'full-text')}"))
+                    located.append(replace(paper, full_text_url=location.url, full_text_direct=location.direct_pdf, access_basis=_legal_access_basis(location.access_basis), provider=f"{paper.provider}+{getattr(adapter, 'name', 'full-text')}"))
                     break
             else:
                 located.append(paper)
@@ -1027,6 +1081,7 @@ class ResearchStage:
                 for record in unresolved_sources if str(record.get("source_id", "")) not in {str(request.get("source_id", "")) for request in requests}
             ] + ([{"kind": "ENTITY_PROVIDER_DEGRADED", "reason": failure} for failure in entity_failures] if entity_failures else []),
             "coverage": self._coverage(candidates, records, requests, research_gap),
+            "download_requests": [dict(request) for request in requests],
             "provider_query_coverage": self._discovery_stats.get("provider_query_coverage", {}),
             "provider_provenance": self._discovery_stats.get("provider_provenance", {}),
             "terms": list(terms),
@@ -1051,6 +1106,13 @@ class ResearchStage:
             for source in manifest.get("sources", ())
             if isinstance(source, Mapping)
         ]
+        safe_manifest["download_requests"] = []
+        for request in manifest.get("download_requests", ()):
+            if not isinstance(request, Mapping):
+                continue
+            safe_request = dict(request)
+            safe_request["url"] = _persisted_url(str(safe_request.get("url", "")))
+            safe_manifest["download_requests"].append(safe_request)
         path.write_text(json.dumps(safe_manifest, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
 
     @staticmethod
@@ -1150,6 +1212,7 @@ class ResearchStage:
         for source in manifest.get("sources", []):
             if source.get("identifier") != identifier and source.get("doi") != identifier.removeprefix("doi:"):
                 continue
+            self._validate_promotion_source(source, locators)
             evidence = dict(source.get("evidence_fields") or {})
             evidence.update({str(key): str(value) for key, value in (fields or {}).items()})
             evidence.update({"evidence_level": "VERIFIED", "evidence_label": "VERIFIED_SOURCE_FACT", "verified_by": str(verifier), "locators": ";".join(str(item) for item in locators)})
@@ -1164,13 +1227,51 @@ class ResearchStage:
                 if isinstance(item, Mapping) and item.get("identifier")
             }
             records[str(source.get("identifier"))] = source
-            manifest["coverage"] = self._coverage(manifest.get("candidates", ()), records, (), False)
+            previous_coverage = dict(manifest.get("coverage") or {})
+            self._discovery_stats.update({
+                "raw_hits": previous_coverage.get("raw_hits", len(manifest.get("candidates", ()))),
+                "unique_candidates": previous_coverage.get("unique_candidates", len(manifest.get("candidates", ()))),
+            })
+            manifest["coverage"] = self._coverage(manifest.get("candidates", ()), records, manifest.get("download_requests", ()), False)
             self._write_manifest_file(manifest)
             self._write_records(records)
             self._write_evidence_notes_from_manifest(manifest)
             self._write_evidence_matrix_projection(manifest, records)
+            self._write_comparability_projection(records)
+            handoff = self.root / "research-handoff.md"
+            handoff.write_text(
+                self._handoff(
+                    str(manifest.get("result", "RESEARCH_GAP")),
+                    str(manifest.get("next_action", "Re-evaluate Research after evidence promotion.")),
+                    tuple(records.values()),
+                    records,
+                    manifest.get("download_requests", ()),
+                    manifest=manifest,
+                ),
+                encoding="utf-8",
+            )
             return source
         raise KeyError(f"source not found in current manifest: {identifier}")
+
+    def _validate_promotion_source(self, source: Mapping[str, Any], locators: Sequence[str]) -> None:
+        raw_path = str(source.get("local_path") or "").strip()
+        if not raw_path:
+            raise ValueError("promotion requires a manifest-bound original PDF path")
+        pdf = Path(raw_path)
+        if not pdf.is_absolute():
+            pdf = (self.project_root / pdf).resolve()
+        else:
+            pdf = pdf.resolve()
+        if not pdf.is_file() or pdf.is_symlink() or pdf.suffix.lower() != ".pdf":
+            raise ValueError("promotion requires an existing regular original PDF")
+        recorded_digest = str(source.get("digest") or "").strip()
+        if not recorded_digest or recorded_digest != _digest(pdf):
+            raise ValueError("promotion requires the current PDF digest to match the manifest")
+        expected_name = _compact(pdf.name)
+        for locator in locators:
+            locator_name = str(locator).split("#", 1)[0].strip()
+            if not locator_name or _compact(Path(locator_name).name) != expected_name or "#page=" not in str(locator):
+                raise ValueError("every promotion locator must identify the manifest-bound PDF and a page")
 
     def _write_provider_status(self, discovery: Sequence[Any], full_text: Sequence[Any]) -> None:
         configured = {
@@ -1312,7 +1413,7 @@ class ResearchStage:
             "title": paper.title,
             "url": _persisted_url(paper.full_text_url),
             "url_status": _url_status(paper.full_text_url),
-            "access_basis": paper.access_basis or "AUTHORIZATION_UNCLEAR",
+            "access_basis": _legal_access_basis(paper.access_basis),
             "suggested_filename": _source_id(paper.identifier) + ".pdf",
             "target_inbox": "research/inbox/authorized-pdfs/",
             "claim_relevance": paper.claim_relevance or "Core/high-priority source; confirm relevance before downloading.",
@@ -1338,16 +1439,7 @@ class ResearchStage:
         self._write_evidence_notes_from_manifest(manifest)
         (self.root / "search-log.md").write_text("# Search Log\n\n" + "\n".join(f"- {path}: query derived from confirmed brief and entity terms" for path in SEARCH_PATHS) + "\n\n## Coverage\n\n" + "\n".join(f"- {key}: {', '.join(value)}" for key, value in provider_coverage.items()) + f"\n\n- Raw hits: {coverage.get('raw_hits', 0)}\n- Unique candidates: {coverage.get('unique_candidates', 0)}\n", encoding="utf-8")
         (self.root / "terms-and-entities.md").write_text("# Terms and Chemistry Entities\n\n" + "\n".join(f"- {term}" for term in terms) + ("\n\n## Provider degradation\n\n" + "\n".join(f"- {failure}" for failure in entity_failures) if entity_failures else "") + "\n", encoding="utf-8")
-        comparability_rows = []
-        for record in records.values():
-            evidence = record.get("evidence_fields") or {}
-            values = (
-                record.get("source_id"), evidence.get("conditions", "UNKNOWN"),
-                evidence.get("units", "UNKNOWN"), evidence.get("endpoint", "UNKNOWN"),
-                "NOT_COMPARABLE until checked", record.get("claim_relevance", ""),
-            )
-            comparability_rows.append("| " + " | ".join(str(value or "UNKNOWN").replace("|", "\\|") for value in values) + " |")
-        (self.root / "comparability-matrix.md").write_text("# Comparability Matrix\n\n| Source | Conditions | Units | Endpoint | Comparable? | Notes |\n| --- | --- | --- | --- | --- | --- |\n" + "\n".join(comparability_rows) + "\n", encoding="utf-8")
+        self._write_comparability_projection(records)
         self._write_evidence_matrix_projection(manifest, records)
         requested_ids = {request["identity"] for request in requests}
         unresolved = [
@@ -1368,6 +1460,21 @@ class ResearchStage:
         for request in requests:
             request_lines.extend([f"## {request['source_id']}", ""] + [f"- {key}: {value}" for key, value in request.items()] + [""])
         (self.root / "download-requests.md").write_text("\n".join(request_lines), encoding="utf-8")
+
+    def _write_comparability_projection(self, records: Mapping[str, Mapping[str, Any]]) -> None:
+        rows = []
+        for record in records.values():
+            evidence = record.get("evidence_fields") or {}
+            values = (
+                record.get("source_id"), evidence.get("conditions", "UNKNOWN"),
+                evidence.get("units", "UNKNOWN"), evidence.get("endpoint", "UNKNOWN"),
+                "NOT_COMPARABLE until checked", record.get("claim_relevance", ""),
+            )
+            rows.append("| " + " | ".join(str(value or "UNKNOWN").replace("|", "\\|") for value in values) + " |")
+        (self.root / "comparability-matrix.md").write_text(
+            "# Comparability Matrix\n\n| Source | Conditions | Units | Endpoint | Comparable? | Notes |\n| --- | --- | --- | --- | --- | --- |\n" + "\n".join(rows) + "\n",
+            encoding="utf-8",
+        )
 
     def _write_evidence_matrix_projection(self, manifest: Mapping[str, Any], records: Mapping[str, Mapping[str, Any]]) -> None:
         matrix = manifest.get("evidence_matrix", {})
@@ -1435,7 +1542,12 @@ def _paper_from_mapping(row: Mapping[str, Any]) -> Paper:
     url = str(row.get("full_text_url") or "")
     direct = bool(row.get("full_text_direct", url.lower().split("?", 1)[0].endswith(".pdf")))
     non_substitutability = row.get("non_substitutability") or row.get("irreplaceability") or row.get("indispensability") or ""
-    return Paper(str(row.get("identifier") or row.get("doi") or row.get("id") or ""), str(row.get("title") or "Untitled"), str(row.get("doi") or ""), row.get("year"), tuple(str(a) for a in row.get("authors", [])), str(row.get("provider") or "fixture"), str(row.get("abstract") or ""), url, str(row.get("access_basis") or ""), str(row.get("priority") or "NORMAL"), str(row.get("claim_relevance") or ""), direct, str(non_substitutability), str(row.get("publication_type") or row.get("type") or "journal-article"), str(row.get("query_family") or ""), str(row.get("version") or ""))
+    return Paper(str(row.get("identifier") or row.get("doi") or row.get("id") or ""), str(row.get("title") or "Untitled"), str(row.get("doi") or ""), row.get("year"), tuple(str(a) for a in row.get("authors", [])), str(row.get("provider") or "fixture"), str(row.get("abstract") or ""), url, _legal_access_basis(row.get("access_basis")), str(row.get("priority") or "NORMAL"), str(row.get("claim_relevance") or ""), direct, str(non_substitutability), str(row.get("publication_type") or row.get("type") or "journal-article"), str(row.get("query_family") or ""), str(row.get("version") or ""))
+
+
+def _legal_access_basis(value: object) -> str:
+    normalized = str(value or "").strip().upper().replace("-", "_")
+    return normalized if normalized in LEGAL_BASES else "AUTHORIZATION_UNCLEAR"
 
 
 def _candidate_key(paper: Paper) -> str:
@@ -1473,6 +1585,20 @@ def _screen_quality(paper: Paper) -> int:
     return int(bool(paper.abstract)) * 4 + int(bool(paper.claim_relevance)) * 2 + int(bool(paper.full_text_url)) + int(bool(paper.doi))
 
 
+def _claim_relevance_bound(brief: str, relevance: str) -> bool:
+    claims = _core_claims(brief)
+    if claims == ("the confirmed review question",):
+        return True
+    claim_tokens = {
+        token
+        for claim in claims
+        for token in re.findall(r"[a-z][a-z0-9-]{3,}", claim.lower())
+        if token not in {"which", "what", "have", "been", "using", "must", "this", "that"}
+    }
+    relevance_tokens = set(re.findall(r"[a-z][a-z0-9-]{3,}", relevance.lower()))
+    return bool(claim_tokens & relevance_tokens)
+
+
 def _screen_paper(brief: str, paper: Paper) -> tuple[str, str, str, bool]:
     title = " ".join(paper.title.split()).lower()
     abstract = " ".join(paper.abstract.split()).lower()
@@ -1503,6 +1629,8 @@ def _screen_paper(brief: str, paper: Paper) -> tuple[str, str, str, bool]:
         role = "background" if review_like else "secondary"
         return "EXCLUDE", role, "publication type is contextual/non-primary and cannot enter the primary evidence pool", False
     explicit_relevance = bool(paper.claim_relevance.strip()) and not generated_relevance
+    if explicit_relevance and not _claim_relevance_bound(brief, paper.claim_relevance):
+        return "EXCLUDE", "excluded", "claim relevance is not lexically bound to a confirmed core claim", False
     if generated_relevance and not paper.abstract and not any(term in text for term in ("protein", "unrelated", "workshop", "survey", "review")):
         return "MAYBE", "secondary", "provider hit lacks an abstract or concrete chemistry match; manual screening is required", True
     if (not chemistry and not explicit_relevance) or (topic_tokens and topic_match == 0 and alias_match == 0 and not explicit_relevance):

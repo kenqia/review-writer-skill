@@ -91,6 +91,21 @@ def _brief_digest(brief: ReviewBrief) -> str:
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def _redact_sensitive_material(text: str) -> str:
+    redacted = re.sub(
+        r"(?i)((?:[\"']?(?:api[_-]?key|access[_-]?token|token|password|secret|authorization)[\"']?)\s*[:=]\s*[\"']?)[^\s,;\"'}]+",
+        r"\1[REDACTED]",
+        text,
+    )
+    redacted = re.sub(
+        r"(?i)([?&#](?:api[_-]?key|access[_-]?token|token|secret|signature|x-amz-security-token)=)[^&#\s]+",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(r"(?i)(\bauthorization\s*:\s*(?:bearer|basic)\s+)[^\s,;]+", r"\1[REDACTED]", redacted)
+    return redacted
+
+
 class IntentStage:
     """Create, confirm, and safely revise a Markdown review brief."""
 
@@ -203,6 +218,7 @@ class IntentStage:
             "role": "chemistry-literature journal reviewer (advisory only)",
             "brief": {"topic": current.topic, "revision": current.revision, "values": {key: value for key, value in current.values.items() if key != "known_material"}},
             "material_scope": self._safe_review_materials(materials),
+            "review_budget": {"max_calls": int(budget), "calls_used": 0, "timeout_seconds": max(0.1, float(timeout_seconds))},
             "required_modules": ["research_question", "core_claims", "scope_time", "exclusions", "audience_contribution", "evidence_standards", "boundary_scenarios", "terminology", "primary_study_eligibility", "evidence_matrix", "journal_fit"],
             "constraints": [
                 "Use only this brief and explicitly allowlisted material.",
@@ -219,6 +235,7 @@ class IntentStage:
             self._write_expert_failure(reason, payload)
             return ExpertReviewResult(decision="FAILED", success=False, reason=reason)
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chemical-review-expert")
+        payload["review_budget"]["calls_used"] = 1
         future = executor.submit(reviewer.review, payload) if hasattr(reviewer, "review") else executor.submit(reviewer, payload)
         try:
             # Do not use the executor as a context manager here: its __exit__
@@ -295,6 +312,8 @@ class IntentStage:
             raise ValueError("expert review decision must be accept-selected, reject-all or defer")
         if not self.expert_report_path.is_file():
             raise ValueError("no successful expert review report exists")
+        if self.proposed_path.exists():
+            raise ConfirmationRequired("an existing review-brief proposal must be resolved before expert suggestions can be accepted")
         report = json.loads(self.expert_report_path.read_text(encoding="utf-8"))
         current = self.read_any(ignore_pending=True)
         if report.get("status") == "FAILED" or report.get("advisory") is not True:
@@ -345,7 +364,7 @@ class IntentStage:
                 text = resolved.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            safe_text = re.sub(r"(?i)(api[_-]?key|token|password|secret|authorization)\s*[:=]\s*[^\s,;]+", r"\1=[REDACTED]", text)
+            safe_text = _redact_sensitive_material(text)
             excerpts.append(f"- {resolved.relative_to(self.project_root).as_posix()}: {' '.join(safe_text.split())[:1200]}")
         return "\n".join(excerpts) or "None supplied explicitly."
 
@@ -484,7 +503,7 @@ class IntentStage:
                 text = resolved.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            safe_text = re.sub(r"(?i)(api[_-]?key|token|password|secret|authorization)\s*[:=]\s*[^\s,;]+", r"\1=[REDACTED]", text)
+            safe_text = _redact_sensitive_material(text)
             excerpts.append(f"- {resolved.relative_to(self.project_root).as_posix()}: {' '.join(safe_text.split())[:1200]}")
         return "\n".join(excerpts)
 
