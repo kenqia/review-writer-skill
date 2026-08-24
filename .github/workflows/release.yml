@@ -37,7 +37,16 @@ jobs:
           python scripts/build_plugin.py --check
           python scripts/validate_plugin_package.py
           python -m unittest discover -s tests -p 'test_*.py'
-          ruff check --target-version py311 .agents/skills/chemical-review plugins/chemical-review/skills/chemical-review scripts tests
+          ruff check --target-version py311
+          .agents/skills/chemical-review-intent
+          .agents/skills/chemical-review-research
+          .agents/skills/chemical-review-synthesis
+          .agents/skills/chemical-review-qa
+          plugins/chemical-review/skills/chemical-review-intent
+          plugins/chemical-review/skills/chemical-review-research
+          plugins/chemical-review/skills/chemical-review-synthesis
+          plugins/chemical-review/skills/chemical-review-qa
+          scripts tests
       - name: Build plugin archive
         run: python scripts/package_plugin.py
       - name: Run bundled cold-start smoke
