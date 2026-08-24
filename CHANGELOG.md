@@ -6,6 +6,9 @@
   inbox identities, parser timeouts, and provider error credential leakage.
 - Bound user download requests to a finite priority queue and preserve deferred
   research gaps; generate synchronized reader and research draft views.
+- Require explicit `VERIFIED_SOURCE_FACT` evidence markers, select download
+  requests by claim relevance/non-substitutability instead of a fixed count,
+  and redact constructor-supplied provider credentials from failures.
 
 ## 0.2.0-beta.1 — v2 implementation candidate
 

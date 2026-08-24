@@ -98,7 +98,7 @@ class SynthesisStage:
         evidence_facts = {
             (match.group(1).strip(), match.group(2).strip()): " ".join(match.group(3).split())
             for match in re.finditer(
-                r"^\s*(?:-\s*)?(?:VERIFIED_)?SOURCE_FACT\s*\[([^\]@]+)\s*@\s*([^\]]+)\]\s*:\s*(.+?)\s*$",
+                r"^\s*(?:-\s*)?VERIFIED_SOURCE_FACT\s*\[([^\]@]+)\s*@\s*([^\]]+)\]\s*:\s*(.+?)\s*$",
                 evidence,
                 re.M,
             )

@@ -200,6 +200,58 @@ class V2ProductTests(unittest.TestCase):
         self.assertNotIn("SUPERSECRET", adapter.last_error)
         self.assertIn("[REDACTED]", adapter.last_error)
 
+        class HeaderFailingTransport:
+            def request(self, method, url, *, headers, body=None, timeout):
+                raise RuntimeError("request failed with Authorization: Bearer DIRECTSECRET")
+
+        direct_adapter = research.CoreAdapter(api_key="DIRECTSECRET", transport=HeaderFailingTransport())
+        with self.assertRaises(research.ProviderUnavailable):
+            direct_adapter.locate("10.1/x")
+        self.assertNotIn("DIRECTSECRET", direct_adapter.last_error)
+        self.assertIn("[REDACTED]", direct_adapter.last_error)
+
+    def test_download_queue_is_evidence_selected_and_not_truncated_at_a_fixed_count(self):
+        research = load_module("v2_priority_queue", V2_SKILLS["chemical-review-research"] / "research.py")
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "review-brief.md").write_text("---\nconfirmed: true\n---\n\n## Topic\nQueue test\n", encoding="utf-8")
+            fixture_dir = project / "fixtures"
+            fixture_dir.mkdir()
+            papers = [
+                {
+                    "identifier": f"doi:10.1234/core-{index}",
+                    "doi": f"10.1234/core-{index}",
+                    "title": f"Core paper {index}",
+                    "full_text_url": f"https://publisher.example/core-{index}.pdf",
+                    "access_basis": "RESTRICTED",
+                    "priority": "CORE",
+                    "claim_relevance": f"Core claim {index} cannot be assessed without this full text.",
+                    "non_substitutability": "Unique reaction conditions and endpoint.",
+                }
+                for index in range(11)
+            ]
+            papers.append({
+                "identifier": "doi:10.1234/background",
+                "doi": "10.1234/background",
+                "title": "Replaceable background",
+                "full_text_url": "https://publisher.example/background.pdf",
+                "access_basis": "RESTRICTED",
+                "priority": "LOW",
+                "claim_relevance": "",
+            })
+            (fixture_dir / "research.json").write_text(json.dumps({"papers": papers}), encoding="utf-8")
+            result = research.ResearchStage(project).run(
+                fixture_dir=fixture_dir,
+                adapters=(),
+                entity_adapters=(),
+                full_text_adapters=(),
+            )
+            self.assertEqual(result.status, "WAITING_FOR_USER")
+            requests = (project / "research" / "download-requests.md").read_text(encoding="utf-8")
+            self.assertEqual(requests.count("## doi-10-1234-core-"), 11)
+            self.assertIn("non_substitutability: Unique reaction conditions and endpoint.", requests)
+            self.assertNotIn("doi:10.1234/background", requests)
+
     def test_configured_open_access_locator_is_downloaded_and_recorded_before_parse(self):
         research = load_module("v2_open_access_route", V2_SKILLS["chemical-review-research"] / "research.py")
         intent = load_module("v2_open_access_intent", V2_SKILLS["chemical-review-intent"] / "intent.py")
@@ -277,7 +329,7 @@ class V2ProductTests(unittest.TestCase):
             })
             fixture_dir = project / "fixtures"
             fixture_dir.mkdir()
-            (fixture_dir / "research.json").write_text(json.dumps({"papers": [{"identifier": "doi:10.1234/bind", "doi": "10.1234/bind", "title": "Binding paper", "access_basis": "RESTRICTED", "full_text_url": "https://restricted.example/bind.pdf"}]}), encoding="utf-8")
+            (fixture_dir / "research.json").write_text(json.dumps({"papers": [{"identifier": "doi:10.1234/bind", "doi": "10.1234/bind", "title": "Binding paper", "access_basis": "RESTRICTED", "full_text_url": "https://restricted.example/bind.pdf", "priority": "CORE", "claim_relevance": "Identity must be verified for the core claim."}]}), encoding="utf-8")
             first = research.ResearchStage(project).run(fixture_dir=fixture_dir)
             self.assertEqual(first.status, "WAITING_FOR_USER")
             inbox = project / "research" / "inbox" / "authorized-pdfs"
@@ -295,7 +347,7 @@ class V2ProductTests(unittest.TestCase):
             research_dir = project / "research"
             research_dir.mkdir()
             (research_dir / "research-handoff.md").write_text("# Research Handoff\n\nResult: RESEARCH_GAP\n", encoding="utf-8")
-            (research_dir / "evidence-notes.md").write_text("# Evidence Notes\n\n- SOURCE_FACT [doi:10.1234/example @ example.pdf#page=2]: 80% selectivity.\n", encoding="utf-8")
+            (research_dir / "evidence-notes.md").write_text("# Evidence Notes\n\n- VERIFIED_SOURCE_FACT [doi:10.1234/example @ example.pdf#page=2]: 80% selectivity.\n", encoding="utf-8")
             candidate = project / "candidate.md"
             candidate.write_text(
                 "# Candidate\n\nStatus: unreviewed; evidence-bounded; partial-scope\n\n"
@@ -336,6 +388,23 @@ class V2ProductTests(unittest.TestCase):
             (research_dir / "evidence-notes.md").write_text("SOURCE_EXCERPT [doi:10.1234/x @ paper.pdf#page=1]: excerpt\n", encoding="utf-8")
             with self.assertRaises(synthesis.EvidenceBoundaryError):
                 synthesis.SynthesisStage(project).publish("SOURCE_FACT [doi:10.1234/x @ paper.pdf#page=1]: invented fact")
+
+    def test_synthesis_rejects_unverified_source_fact_even_when_content_matches(self):
+        synthesis = load_module("v2_synthesis_verification_marker", V2_SKILLS["chemical-review-synthesis"] / "synthesis.py")
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "review-brief.md").write_text("---\nconfirmed: true\n---\n", encoding="utf-8")
+            research_dir = project / "research"
+            research_dir.mkdir()
+            (research_dir / "research-handoff.md").write_text("Result: READY_FOR_SYNTHESIS\n", encoding="utf-8")
+            (research_dir / "evidence-notes.md").write_text(
+                "SOURCE_FACT [doi:10.1/x @ paper.pdf#page=1]: 80% selectivity.\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(synthesis.EvidenceBoundaryError):
+                synthesis.SynthesisStage(project).publish(
+                    "SOURCE_FACT [doi:10.1/x @ paper.pdf#page=1]: 80% selectivity."
+                )
 
     def test_synthesis_rejects_a_mismatched_fact_at_anotherwise_valid_locator(self):
         synthesis = load_module("v2_synthesis_claim_match", V2_SKILLS["chemical-review-synthesis"] / "synthesis.py")

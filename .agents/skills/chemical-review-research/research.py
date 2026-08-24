@@ -31,11 +31,11 @@ SEARCH_PATHS = (
     "citation relations", "authors/groups", "recent developments",
 )
 DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.I)
-DOWNLOAD_QUEUE_LIMIT = 10
 _SENSITIVE_QUERY_RE = re.compile(
     r"([?&](?:api[_-]?key|access[_-]?token|auth(?:orization)?|password|secret|token|key)=)[^&\s]+",
     re.I,
 )
+_SENSITIVE_HEADER_RE = re.compile(r"(\b(?:authorization|x-api-key)\s*:\s*(?:bearer\s+)?)[^\s,;]+", re.I)
 
 
 class ProviderUnavailable(RuntimeError):
@@ -141,8 +141,17 @@ class _Adapter:
                 return self.transport.request(method, url, headers=headers or {"Accept": "application/json"}, body=body, timeout=self.settings.timeout)
             except Exception as exc:  # adapters expose honest degradation, never a false success
                 last = exc
-                self.last_error = _safe_error(str(exc))
+                self.last_error = _safe_error(str(exc), secrets=self._credential_values())
         raise ProviderUnavailable(f"{self.name} request failed after configured retries") from last
+
+    def _credential_values(self) -> tuple[str, ...]:
+        return tuple(
+            value.strip()
+            for name in ("api_key", "token")
+            if (value := getattr(self, name, ""))
+            and isinstance(value, str)
+            and value.strip()
+        )
 
 
 @dataclass(frozen=True)
@@ -159,6 +168,7 @@ class Paper:
     priority: str = "NORMAL"
     claim_relevance: str = ""
     full_text_direct: bool = False
+    non_substitutability: str = ""
 
 
 @dataclass(frozen=True)
@@ -460,9 +470,7 @@ class ResearchStage:
                 else:
                     research_gap = True
         pending_requests.sort(key=lambda item: (-int(item["priority_score"]), item["source_id"]))
-        requests = [{key: value for key, value in request.items() if key != "priority_score"} for request in pending_requests[:DOWNLOAD_QUEUE_LIMIT]]
-        if len(pending_requests) > len(requests):
-            research_gap = True
+        requests = [{key: value for key, value in request.items() if key != "priority_score"} for request in pending_requests]
         self._write_records(records)
         self._write_supporting_assets(brief, papers, records, requests, terms, entity_failures)
         self._write_provider_status((*adapters, *entity_adapters), full_text_adapters or ())
@@ -602,17 +610,17 @@ class ResearchStage:
             path = self.root / "source-records" / (str(record.get("source_id") or _source_id(paper_id)) + ".md")
             values = dict(record)
             lines = ["---", "kind: research-source", "schema: 2", "---", "", f"# {values.get('title', paper_id)}", ""]
-            for key in ("source_id", "identifier", "doi", "title", "year", "provider", "full_text_url", "access_basis", "priority", "claim_relevance", "local_path", "digest", "downloaded_at", "full_text", "parser", "failure"):
+            for key in ("source_id", "identifier", "doi", "title", "year", "provider", "full_text_url", "access_basis", "priority", "claim_relevance", "non_substitutability", "local_path", "digest", "downloaded_at", "full_text", "parser", "failure"):
                 lines.append(f"{key}: {values.get(key, '')}")
             lines.append("locators: " + ";".join(values.get("locators", [])))
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         registry_lines = [
             "# Research Source Registry", "", "Research owns this registry. Original PDFs are authoritative; parser output is a locator-bound reading aid.", "",
-            "| Source ID | Identity | Title | Provider | Full-text URL | Access basis | Priority | Full text | Parser | Locator(s) | Digest | Downloaded at | Claim relevance | Failure/recovery |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| Source ID | Identity | Title | Provider | Full-text URL | Access basis | Priority | Full text | Parser | Locator(s) | Digest | Downloaded at | Claim relevance | Non-substitutability | Failure/recovery |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
         for record in records.values():
-            registry_lines.append("| " + " | ".join(str(record.get(key, "none") or "none").replace("|", "\\|") for key in ("source_id", "identifier", "title", "provider", "full_text_url", "access_basis", "priority", "full_text", "parser", "locators", "digest", "downloaded_at", "claim_relevance", "failure")) + " |")
+            registry_lines.append("| " + " | ".join(str(record.get(key, "none") or "none").replace("|", "\\|") for key in ("source_id", "identifier", "title", "provider", "full_text_url", "access_basis", "priority", "full_text", "parser", "locators", "digest", "downloaded_at", "claim_relevance", "non_substitutability", "failure")) + " |")
         (self.root / "source-registry.md").write_text("\n".join(registry_lines) + "\n", encoding="utf-8")
 
     def _find_inbox_pdf(self, paper: Paper) -> Path | None:
@@ -692,6 +700,7 @@ class ResearchStage:
             "suggested_filename": _source_id(paper.identifier) + ".pdf",
             "target_inbox": "research/inbox/authorized-pdfs/",
             "claim_relevance": paper.claim_relevance or "Core/high-priority source; confirm relevance before downloading.",
+            "non_substitutability": paper.non_substitutability or "Not recorded; treat this source as replaceable until reviewed.",
             "priority": paper.priority,
             "priority_score": str(_download_priority(paper)),
             "failure": reason,
@@ -750,7 +759,8 @@ class ResearchStage:
 def _paper_from_mapping(row: Mapping[str, Any]) -> Paper:
     url = str(row.get("full_text_url") or "")
     direct = bool(row.get("full_text_direct", url.lower().split("?", 1)[0].endswith(".pdf")))
-    return Paper(str(row.get("identifier") or row.get("doi") or row.get("id") or ""), str(row.get("title") or "Untitled"), str(row.get("doi") or ""), row.get("year"), tuple(str(a) for a in row.get("authors", [])), str(row.get("provider") or "fixture"), str(row.get("abstract") or ""), url, str(row.get("access_basis") or ""), str(row.get("priority") or "NORMAL"), str(row.get("claim_relevance") or ""), direct)
+    non_substitutability = row.get("non_substitutability") or row.get("irreplaceability") or row.get("indispensability") or ""
+    return Paper(str(row.get("identifier") or row.get("doi") or row.get("id") or ""), str(row.get("title") or "Untitled"), str(row.get("doi") or ""), row.get("year"), tuple(str(a) for a in row.get("authors", [])), str(row.get("provider") or "fixture"), str(row.get("abstract") or ""), url, str(row.get("access_basis") or ""), str(row.get("priority") or "NORMAL"), str(row.get("claim_relevance") or ""), direct, str(non_substitutability))
 
 
 def _source_id(identifier: str) -> str:
@@ -799,19 +809,24 @@ def _configured_entity_adapters() -> tuple[Any, ...]:
 
 
 def _download_priority(paper: Paper) -> int:
+    if not paper.claim_relevance.strip():
+        return 0
     priority = paper.priority.strip().upper()
     score = {"CORE": 3, "HIGH": 2, "IMPORTANT": 2, "NORMAL": 1, "LOW": 0}.get(priority, 1)
-    if paper.claim_relevance.strip():
-        score = max(score, 1)
+    if paper.non_substitutability.strip():
+        score += 4
     return score
 
 
-def _safe_error(value: str) -> str:
+def _safe_error(value: str, *, secrets: Sequence[str] = ()) -> str:
     redacted = _SENSITIVE_QUERY_RE.sub(r"\1[REDACTED]", value)
+    redacted = _SENSITIVE_HEADER_RE.sub(r"\1[REDACTED]", redacted)
     for name in ("OPENALEX_API_KEY", "SEMANTIC_SCHOLAR_API_KEY", "CORE_API_KEY", "MINERU_TOKEN"):
         secret = os.environ.get(name, "").strip()
         if secret:
             redacted = redacted.replace(secret, "[REDACTED]")
+    for secret in secrets:
+        redacted = redacted.replace(secret, "[REDACTED]")
     return redacted[:500]
 
 
