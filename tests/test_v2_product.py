@@ -71,6 +71,18 @@ class V2ProductTests(unittest.TestCase):
             stage.confirm_change()
             self.assertIn("2020-present", (project / "review-brief.md").read_text())
 
+    def test_intent_reuses_only_explicit_project_material(self):
+        intent = load_module("v2_intent_material_test", V2_SKILLS["chemical-review-intent"] / "intent.py")
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            material = project / "project-context.md"
+            material.write_text("Known scope: homogeneous nickel chemistry.", encoding="utf-8")
+            (project / ".private.md").write_text("must not be copied", encoding="utf-8")
+            intent.IntentStage(project).initialize("nickel coupling", materials=(material,))
+            brief = (project / "review-brief.md").read_text(encoding="utf-8")
+            self.assertIn("homogeneous nickel chemistry", brief)
+            self.assertNotIn("must not be copied", brief)
+
     def test_research_waits_for_restricted_pdf_then_resumes_without_dropping_registry(self):
         research = load_module("v2_research_test", V2_SKILLS["chemical-review-research"] / "research.py")
         intent = load_module("v2_intent_for_research", V2_SKILLS["chemical-review-intent"] / "intent.py")
@@ -117,7 +129,13 @@ class V2ProductTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            first = research.ResearchStage(project).run(fixture_dir=fixture_dir)
+            class Entity:
+                name = "PubChem"
+
+                def expand(self, term):
+                    return ("nickelate",)
+
+            first = research.ResearchStage(project).run(fixture_dir=fixture_dir, entity_adapters=[Entity()])
             self.assertEqual(first.status, "WAITING_FOR_USER")
             request_text = (project / "research" / "download-requests.md").read_text()
             self.assertIn("https://publisher.example/example.pdf", request_text)
@@ -126,13 +144,15 @@ class V2ProductTests(unittest.TestCase):
             inbox = project / "research" / "inbox" / "authorized-pdfs"
             inbox.mkdir(parents=True, exist_ok=True)
             (inbox / "doi-10.1234-example.pdf").write_bytes(b"%PDF DOI 10.1234/example")
-            second = research.ResearchStage(project).run(fixture_dir=fixture_dir)
+            second = research.ResearchStage(project).run(fixture_dir=fixture_dir, entity_adapters=[Entity()])
             self.assertEqual(second.status, "READY_FOR_SYNTHESIS")
             registry_after = (project / "research" / "source-registry.md").read_text()
             self.assertIn("doi:10.1234/example", registry_after)
             self.assertIn("example.pdf#page=2", registry_after)
             self.assertGreaterEqual(len(registry_after), len(registry_before))
             self.assertIn("MinerU", (project / "research" / "research-handoff.md").read_text())
+            self.assertTrue((project / "research" / "provider-status.md").is_file())
+            self.assertIn("nickelate", (project / "research" / "terms-and-entities.md").read_text())
 
     def test_provider_adapters_normalize_fixture_responses_and_never_persist_credentials(self):
         research = load_module("v2_provider_test", V2_SKILLS["chemical-review-research"] / "research.py")
@@ -198,6 +218,29 @@ class V2ProductTests(unittest.TestCase):
             self.assertIn("https://oa.example/core.pdf", registry)
             self.assertEqual(len(list((project / "research" / "fulltext").glob("*.pdf"))), 1)
 
+    def test_unmatched_inbox_pdf_is_held_for_explicit_binding(self):
+        research = load_module("v2_binding_research", V2_SKILLS["chemical-review-research"] / "research.py")
+        intent = load_module("v2_binding_intent", V2_SKILLS["chemical-review-intent"] / "intent.py")
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            stage = intent.IntentStage(project)
+            stage.initialize("binding review")
+            stage.confirm({
+                "research_question": "Which paper is this?", "core_claims": ["Identity must be deterministic."],
+                "scope": "One paper.", "exclusions": "None.", "audience": "Chemists.",
+                "contribution": "No guessing.", "evidence_standards": "DOI and locator.", "boundary_scenarios": "UNKNOWN retained.",
+            })
+            fixture_dir = project / "fixtures"
+            fixture_dir.mkdir()
+            (fixture_dir / "research.json").write_text(json.dumps({"papers": [{"identifier": "doi:10.1234/bind", "doi": "10.1234/bind", "title": "Binding paper", "access_basis": "RESTRICTED", "full_text_url": "https://restricted.example/bind.pdf"}]}), encoding="utf-8")
+            first = research.ResearchStage(project).run(fixture_dir=fixture_dir)
+            self.assertEqual(first.status, "WAITING_FOR_USER")
+            inbox = project / "research" / "inbox" / "authorized-pdfs"
+            (inbox / "unrelated-paper.pdf").write_bytes(b"pdf")
+            second = research.ResearchStage(project).run(fixture_dir=fixture_dir)
+            self.assertEqual(second.status, "WAITING_FOR_USER")
+            self.assertTrue((project / "research" / "binding-requests.md").is_file())
+
     def test_synthesis_and_qa_keep_evidence_boundaries_and_conflicts(self):
         synthesis = load_module("v2_synthesis_test", V2_SKILLS["chemical-review-synthesis"] / "synthesis.py")
         qa = load_module("v2_qa_test", V2_SKILLS["chemical-review-qa"] / "qa.py")
@@ -226,13 +269,25 @@ class V2ProductTests(unittest.TestCase):
             for context in contexts:
                 self.assertTrue((Path(context) / "context.md").is_file())
             reports = qa_stage.write_fixture_reports(
-                {"evidence-locator": "severity: HIGH\nlocator conflict", "chemistry-comparability": "severity: HIGH\nconflict: LOW", "synthesis-novelty": "severity: MEDIUM\n", "overclaim-counterexample": "severity: HIGH\n"}
+                {"evidence-locator": "cited locator: example.pdf#page=2\nseverity: HIGH\nrationale: locator conflict\nearliest return stage: Research", "chemistry-comparability": "cited locator: example.pdf#page=2\nseverity: HIGH\nrationale: conflict: LOW\nearliest return stage: Research", "synthesis-novelty": "cited locator: example.pdf#page=2\nseverity: MEDIUM\nrationale: bounded\nearliest return stage: Synthesis", "overclaim-counterexample": "cited locator: example.pdf#page=2\nseverity: HIGH\nrationale: bounded\nearliest return stage: Synthesis"}
             )
             qa_stage.finalize()
             self.assertEqual(len(reports), 4)
             self.assertTrue((project / "qa" / "review-report.md").is_file())
             self.assertIn("conflict", (project / "qa" / "review-report.md").read_text().lower())
             self.assertIn("Research", (project / "qa" / "revision-plan.md").read_text())
+
+    def test_synthesis_rejects_source_fact_from_unverified_parser_excerpt(self):
+        synthesis = load_module("v2_synthesis_boundary_test", V2_SKILLS["chemical-review-synthesis"] / "synthesis.py")
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "review-brief.md").write_text("---\nconfirmed: true\n---\n\n# Review Brief\n", encoding="utf-8")
+            research_dir = project / "research"
+            research_dir.mkdir()
+            (research_dir / "research-handoff.md").write_text("# Research Handoff\n\nResult: READY_FOR_SYNTHESIS\n", encoding="utf-8")
+            (research_dir / "evidence-notes.md").write_text("SOURCE_EXCERPT [doi:10.1234/x @ paper.pdf#page=1]: excerpt\n", encoding="utf-8")
+            with self.assertRaises(synthesis.EvidenceBoundaryError):
+                synthesis.SynthesisStage(project).publish("SOURCE_FACT [doi:10.1234/x @ paper.pdf#page=1]: invented fact")
 
     def test_fresh_project_black_box_intent_research_synthesis_qa(self):
         intent = load_module("v2_e2e_intent", V2_SKILLS["chemical-review-intent"] / "intent.py")
@@ -269,6 +324,8 @@ class V2ProductTests(unittest.TestCase):
             (inbox / "doi-10.1234-core.pdf").write_bytes(b"authorized fixture")
             ready = research.ResearchStage(project).run(fixture_dir=fixture_dir)
             self.assertEqual(ready.status, "READY_FOR_SYNTHESIS")
+            evidence_notes = project / "research" / "evidence-notes.md"
+            evidence_notes.write_text(evidence_notes.read_text(encoding="utf-8") + "\n- VERIFIED_SOURCE_FACT [doi:10.1234/core @ core.pdf#page=2#section=Results]: 80% selectivity after original PDF check.\n", encoding="utf-8")
             candidate = project / "candidate.md"
             candidate.write_text(
                 "# Candidate\n\nStatus: unreviewed; evidence-bounded\n\n"
@@ -283,7 +340,7 @@ class V2ProductTests(unittest.TestCase):
             qa_stage = qa.QAStage(project)
             contexts = qa_stage.prepare()
             self.assertEqual(len(contexts), 4)
-            qa_stage.write_fixture_reports({slug: "severity: LOW\nearliest return stage: Synthesis\nrationale: bounded" for slug, _label, _instruction in qa.ROLES})
+            qa_stage.write_fixture_reports({slug: "cited locator: core.pdf#page=2\nseverity: LOW\nearliest return stage: Synthesis\nrationale: bounded" for slug, _label, _instruction in qa.ROLES})
             final = qa_stage.finalize()
             self.assertTrue(final.report_path.is_file())
             self.assertTrue((project / "review-brief.md").is_file())

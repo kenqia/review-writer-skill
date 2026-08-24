@@ -82,7 +82,7 @@ class IntentStage:
         self.proposed_path = self.project_root / "review-brief.proposed.md"
         self.history = self.project_root / "intent-history"
 
-    def initialize(self, topic: str) -> ReviewBrief:
+    def initialize(self, topic: str, *, materials: tuple[str | Path, ...] = ()) -> ReviewBrief:
         topic = topic.strip()
         if not topic:
             raise ValueError("topic cannot be blank")
@@ -98,12 +98,15 @@ class IntentStage:
             "contribution": "Open question: what decision or understanding should change?",
             "evidence_standards": "Open question: primary full text, locator, and comparability requirements.",
             "boundary_scenarios": "Open question: how UNKNOWN, NOT_COMPARABLE, and Chemical GAP should be handled.",
+            "known_material": self._safe_materials(materials),
         }
         brief = ReviewBrief(topic=topic, confirmed=False, values=values)
         self._write(brief, next_action="Answer the open questions, then explicitly confirm this brief.")
         return brief
 
     def confirm(self, decisions: Mapping[str, object]) -> ReviewBrief:
+        if self.proposed_path.exists():
+            raise ConfirmationRequired("a proposed intent change requires confirm_change(), not a new confirmation")
         current = self.read_any()
         merged = dict(current.values)
         for key, _heading in FIELDS:
@@ -183,6 +186,14 @@ class IntentStage:
                 values[key] = tuple(line[2:].strip() if line.startswith("- ") else line for line in lines)
             else:
                 values[key] = " ".join(lines)
+        material_start = body.find("## Known project material\n")
+        if material_start >= 0:
+            material_start += len("## Known project material\n")
+            material_end = body.find("\n## ", material_start)
+            raw = body[material_start:] if material_end < 0 else body[material_start:material_end]
+            values["known_material"] = "\n".join(line.strip() for line in raw.splitlines() if line.strip())
+        else:
+            values["known_material"] = ""
         return ReviewBrief(topic, metadata.get("confirmed", "false").lower() == "true", values, int(metadata.get("revision", "1")))
 
     @staticmethod
@@ -201,6 +212,24 @@ class IntentStage:
         snapshot = self.history / f"r{brief.revision:03d}-{reason}.md"
         if not snapshot.exists() and self.path.exists():
             snapshot.write_text(self.path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    def _safe_materials(self, materials: tuple[str | Path, ...]) -> str:
+        excerpts: list[str] = []
+        for raw_path in materials:
+            path = Path(raw_path)
+            try:
+                resolved = path.resolve()
+                resolved.relative_to(self.project_root)
+            except ValueError:
+                continue
+            if resolved.is_symlink() or not resolved.is_file() or resolved.name.startswith("."):
+                continue
+            try:
+                text = resolved.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            excerpts.append(f"- {resolved.relative_to(self.project_root).as_posix()}: {' '.join(text.split())[:1200]}")
+        return "\n".join(excerpts)
 
     def _write(self, brief: ReviewBrief, *, next_action: str, path: Path | None = None) -> None:
         target = path or self.path
@@ -228,6 +257,7 @@ class IntentStage:
             else:
                 lines.append(_yaml_scalar(value))
             lines.append("")
+        lines.extend(("## Known project material", "", str(brief.values.get("known_material", "") or "None supplied explicitly."), ""))
         lines.extend(("## Confirmation and next action", "", f"- Confirmed: {'YES' if brief.confirmed else 'NO'}", f"- Next action: {next_action}", ""))
         target.write_text("\n".join(lines), encoding="utf-8")
 
@@ -238,6 +268,7 @@ def main() -> int:
     init = sub.add_parser("init")
     init.add_argument("--project", type=Path, required=True)
     init.add_argument("--topic", required=True)
+    init.add_argument("--material", type=Path, action="append", default=[])
     confirm = sub.add_parser("confirm")
     confirm.add_argument("--project", type=Path, required=True)
     confirm.add_argument("--decisions-json", type=Path, required=True)
@@ -249,7 +280,7 @@ def main() -> int:
     args = parser.parse_args()
     stage = IntentStage(args.project)
     if args.command == "init":
-        result = stage.initialize(args.topic)
+        result = stage.initialize(args.topic, materials=tuple(args.material))
     elif args.command == "confirm":
         result = stage.confirm(json.loads(args.decisions_json.read_text(encoding="utf-8")))
     elif args.command == "propose-change":

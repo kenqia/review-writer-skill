@@ -8,6 +8,7 @@ transport, and stops at the first missing legal/full-text or binding decision.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict, replace
+from datetime import datetime, timezone
 import argparse
 import hashlib
 import json
@@ -88,6 +89,10 @@ def _json_body(response: HttpResponse) -> Mapping[str, Any]:
     return value
 
 
+def _now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
 @dataclass(frozen=True)
 class ProviderSettings:
     endpoint: str
@@ -123,6 +128,7 @@ class _Adapter:
         self.settings = settings or ProviderSettings.from_env(self.name, "")
         self.transport = transport or UrllibTransport()
         self.calls = 0
+        self.last_error = ""
 
     def _request(self, method: str, url: str, *, headers: Mapping[str, str] | None = None, body: bytes | None = None) -> HttpResponse:
         if self.calls >= self.settings.budget:
@@ -134,6 +140,7 @@ class _Adapter:
                 return self.transport.request(method, url, headers=headers or {"Accept": "application/json"}, body=body, timeout=self.settings.timeout)
             except Exception as exc:  # adapters expose honest degradation, never a false success
                 last = exc
+                self.last_error = str(exc)
         raise ProviderUnavailable(f"{self.name} request failed after configured retries") from last
 
 
@@ -150,6 +157,7 @@ class Paper:
     access_basis: str = ""
     priority: str = "NORMAL"
     claim_relevance: str = ""
+    full_text_direct: bool = False
 
 
 @dataclass(frozen=True)
@@ -165,11 +173,18 @@ class FullTextLocation:
 class OpenAlexAdapter(_Adapter):
     name = "OpenAlex"
 
-    def __init__(self, *, transport: Any | None = None, settings: ProviderSettings | None = None):
+    def __init__(self, *, transport: Any | None = None, settings: ProviderSettings | None = None, api_key: str | None = None, mailto: str | None = None):
+        self.api_key = api_key if api_key is not None else os.environ.get("OPENALEX_API_KEY", "")
+        self.mailto = mailto if mailto is not None else os.environ.get("OPENALEX_MAILTO", "")
         super().__init__(settings=settings or ProviderSettings.from_env(self.name, "https://api.openalex.org/works"), transport=transport)
 
     def search(self, query: str, limit: int = 10) -> tuple[Paper, ...]:
-        payload = _json_body(self._request("GET", self.settings.endpoint + "?" + urlencode({"search": query, "per-page": min(limit, 200)})))
+        params: dict[str, object] = {"search": query, "per-page": min(limit, 200)}
+        if self.api_key:
+            params["api_key"] = self.api_key
+        if self.mailto:
+            params["mailto"] = self.mailto
+        payload = _json_body(self._request("GET", self.settings.endpoint + "?" + urlencode(params)))
         values = payload.get("results", [])
         return tuple(Paper(str(row.get("id", "")), str(row.get("title", "Untitled")), str(row.get("doi", "")).replace("https://doi.org/", ""), row.get("publication_year"), provider=self.name, abstract=str(row.get("abstract_inverted_index", ""))) for row in values if isinstance(row, Mapping) and row.get("id"))
 
@@ -365,13 +380,27 @@ class ResearchStage:
         *,
         fixture_dir: str | Path | None = None,
         adapters: Sequence[Any] | None = None,
+        entity_adapters: Sequence[Any] | None = None,
         full_text_adapters: Sequence[Any] | None = None,
         download_transport: Any | None = None,
     ) -> ResearchResult:
         brief = self._confirmed_brief()
         self._ensure_dirs()
         fixture = self._load_fixture(fixture_dir)
-        papers = self._discover(brief, fixture, adapters)
+        if adapters is None:
+            adapters = tuple(
+                adapter()
+                for adapter in (OpenAlexAdapter, SemanticScholarAdapter, CrossrefAdapter)
+                if _provider_allowed(adapter.name)
+            )
+        if entity_adapters is None:
+            entity_adapters = tuple(
+                adapter()
+                for adapter in (PubChemAdapter, ChebiAdapter)
+                if _provider_allowed(adapter.name)
+            )
+        terms, entity_failures = self._expand_entities(brief, entity_adapters)
+        papers = self._discover(brief, fixture, adapters, terms=terms)
         papers = self._locate_full_text(papers, full_text_adapters or ())
         records = self._load_records()
         for paper in papers:
@@ -385,6 +414,8 @@ class ResearchStage:
             if inbox_pdf is not None:
                 record["local_path"] = str(inbox_pdf)
                 record["digest"] = _digest(inbox_pdf)
+                record["access_basis"] = "USER_AUTHORIZED"
+                record["downloaded_at"] = "USER_PROVIDED_TIME_NOT_OBSERVED"
                 try:
                     parsed = self._parse(inbox_pdf, paper.identifier, parsed_fixture.get(paper.identifier))
                     record.update({"parser": parsed[2], "locators": list(parsed[1]), "full_text": "FOUND", "failure": parsed[3]})
@@ -392,11 +423,11 @@ class ResearchStage:
                     parsed_count += 1
                 except ProviderUnavailable as exc:
                     record.update({"full_text": "FOUND", "parser": "UNPARSED", "failure": str(exc)})
-            elif paper.full_text_url and paper.access_basis in LEGAL_BASES and paper.access_basis == "OPEN_ACCESS":
+            elif paper.full_text_url and paper.full_text_direct and paper.access_basis == "OPEN_ACCESS":
                 target = self.root / "fulltext" / (_source_id(paper.identifier) + ".pdf")
                 try:
                     self._download(paper.full_text_url, target, transport=download_transport)
-                    record.update({"local_path": str(target), "digest": _digest(target), "full_text": "FOUND", "access_basis": "OPEN_ACCESS"})
+                    record.update({"local_path": str(target), "digest": _digest(target), "full_text": "FOUND", "access_basis": "OPEN_ACCESS", "downloaded_at": _now()})
                     parsed = self._parse(target, paper.identifier, parsed_fixture.get(paper.identifier))
                     record.update({"parser": parsed[2], "locators": list(parsed[1]), "failure": parsed[3]})
                     self._append_evidence(paper, parsed[0], parsed[1], parsed[2], parsed[3])
@@ -415,7 +446,8 @@ class ResearchStage:
                 })
                 record.update({"full_text": "WAITING_FOR_USER", "failure": "legal user download required"})
         self._write_records(records)
-        self._write_supporting_assets(brief, papers, records, requests)
+        self._write_supporting_assets(brief, papers, records, requests, terms, entity_failures)
+        self._write_provider_status((*adapters, *entity_adapters), full_text_adapters or ())
         if requests:
             status, next_action = "WAITING_FOR_USER", "Complete the finite download queue in download-requests.md, then rerun Research."
         elif parsed_count:
@@ -453,7 +485,7 @@ class ResearchStage:
         value = json.loads(path.read_text(encoding="utf-8"))
         return value if isinstance(value, Mapping) else {}
 
-    def _discover(self, brief: str, fixture: Mapping[str, Any], adapters: Sequence[Any] | None) -> list[Paper]:
+    def _discover(self, brief: str, fixture: Mapping[str, Any], adapters: Sequence[Any] | None, *, terms: Sequence[str] = ()) -> list[Paper]:
         if fixture.get("papers"):
             return [_paper_from_mapping(row) for row in fixture["papers"] if isinstance(row, Mapping)]
         topic = _section(brief, "Topic") or _section(brief, "Research question")
@@ -463,12 +495,24 @@ class ResearchStage:
         for adapter in adapters:
             try:
                 for path in SEARCH_PATHS:
-                    for paper in adapter.search(f"{topic}; {path}", limit=5):
+                    for paper in adapter.search(f"{topic}; terms: {', '.join(terms)}; {path}", limit=5):
                         key = paper.doi.lower() if paper.doi else paper.identifier.lower()
                         found.setdefault(key, paper)
             except (ProviderUnavailable, AttributeError):
                 continue
         return list(found.values())
+
+    @staticmethod
+    def _expand_entities(brief: str, adapters: Sequence[Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        topic = _section(brief, "Topic") or _section(brief, "Research question")
+        terms = {topic}
+        failures: list[str] = []
+        for adapter in adapters:
+            try:
+                terms.update(str(value).strip() for value in adapter.expand(topic) if str(value).strip())
+            except (ProviderUnavailable, AttributeError) as exc:
+                failures.append(f"{getattr(adapter, 'name', adapter.__class__.__name__)}: {exc}")
+        return tuple(sorted(terms)), tuple(failures)
 
     @staticmethod
     def _locate_full_text(papers: Sequence[Paper], adapters: Sequence[Any]) -> list[Paper]:
@@ -486,7 +530,7 @@ class ResearchStage:
                     continue
                 if locations:
                     location = locations[0]
-                    located.append(replace(paper, full_text_url=location.url, access_basis=location.access_basis, provider=f"{paper.provider}+{getattr(adapter, 'name', 'full-text')}"))
+                    located.append(replace(paper, full_text_url=location.url, full_text_direct=location.direct_pdf, access_basis=location.access_basis, provider=f"{paper.provider}+{getattr(adapter, 'name', 'full-text')}"))
                     break
             else:
                 located.append(paper)
@@ -505,22 +549,52 @@ class ResearchStage:
                 result[values["identifier"]] = values
         return result
 
+    def _write_provider_status(self, discovery: Sequence[Any], full_text: Sequence[Any]) -> None:
+        configured = {
+            getattr(adapter, "name", adapter.__class__.__name__)
+            for adapter in (*discovery, *full_text)
+        }
+        rows = (
+            ("discovery/metadata", "OpenAlex", "configure the adapter or enable the documented network route"),
+            ("discovery/metadata", "Semantic Scholar", "set SEMANTIC_SCHOLAR_API_KEY when required and enable the route"),
+            ("discovery/metadata", "Crossref", "configure CROSSREF_MAILTO and enable the route"),
+            ("chemistry entity/term", "PubChem", "configure the adapter or provide verified terms"),
+            ("chemistry entity/term", "ChEBI", "configure the adapter or provide verified terms"),
+            ("legal full text", "Unpaywall", "set UNPAYWALL_EMAIL and enable the route"),
+            ("legal full text", "Europe PMC", "enable the route or use a legal user download"),
+            ("legal full text", "CORE", "set CORE_API_KEY and enable the route"),
+            ("PDF parsing", "MinerU", "set MINERU_COMMAND or MINERU_ENDPOINT; pdftotext remains degraded fallback"),
+        )
+        lines = [
+            "# Research Provider Status", "",
+            "Missing configuration is real degradation, not a claim that the provider is available.", "",
+            "| Capability | Provider | Configured in this run | Failure/degradation | Recovery |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for capability, provider, recovery in rows:
+            configured_here = provider in configured or (provider == "MinerU" and MinerUParser().configured)
+            adapter = next((item for item in (*discovery, *full_text) if getattr(item, "name", "") == provider), None)
+            failure = getattr(adapter, "last_error", "") if adapter is not None else ""
+            action = "Retry the configured route; no credential value is persisted." if failure else recovery
+            lines.append(f"| {capability} | {provider} | {'YES' if configured_here else 'NO'} | {failure or 'none recorded'} | {action} |")
+        (self.root / "provider-status.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
     def _write_records(self, records: Mapping[str, Mapping[str, Any]]) -> None:
         for paper_id, record in records.items():
             path = self.root / "source-records" / (str(record.get("source_id") or _source_id(paper_id)) + ".md")
             values = dict(record)
             lines = ["---", "kind: research-source", "schema: 2", "---", "", f"# {values.get('title', paper_id)}", ""]
-            for key in ("source_id", "identifier", "doi", "title", "year", "provider", "full_text_url", "access_basis", "priority", "claim_relevance", "local_path", "digest", "full_text", "parser", "failure"):
+            for key in ("source_id", "identifier", "doi", "title", "year", "provider", "full_text_url", "access_basis", "priority", "claim_relevance", "local_path", "digest", "downloaded_at", "full_text", "parser", "failure"):
                 lines.append(f"{key}: {values.get(key, '')}")
             lines.append("locators: " + ";".join(values.get("locators", [])))
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         registry_lines = [
             "# Research Source Registry", "", "Research owns this registry. Original PDFs are authoritative; parser output is a locator-bound reading aid.", "",
-            "| Source ID | Identity | Title | Provider | Full-text URL | Access basis | Priority | Full text | Parser | Locator(s) | Digest | Claim relevance | Failure/recovery |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| Source ID | Identity | Title | Provider | Full-text URL | Access basis | Priority | Full text | Parser | Locator(s) | Digest | Downloaded at | Claim relevance | Failure/recovery |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
         for record in records.values():
-            registry_lines.append("| " + " | ".join(str(record.get(key, "none") or "none").replace("|", "\\|") for key in ("source_id", "identifier", "title", "provider", "full_text_url", "access_basis", "priority", "full_text", "parser", "locators", "digest", "claim_relevance", "failure")) + " |")
+            registry_lines.append("| " + " | ".join(str(record.get(key, "none") or "none").replace("|", "\\|") for key in ("source_id", "identifier", "title", "provider", "full_text_url", "access_basis", "priority", "full_text", "parser", "locators", "digest", "downloaded_at", "claim_relevance", "failure")) + " |")
         (self.root / "source-registry.md").write_text("\n".join(registry_lines) + "\n", encoding="utf-8")
 
     def _find_inbox_pdf(self, paper: Paper) -> Path | None:
@@ -541,8 +615,12 @@ class ResearchStage:
                         return candidate
         if len(candidates) == 1 and len(paper.identifier) < 4:
             return candidates[0]
-        if len(matches) > 1:
-            (self.root / "binding-requests.md").write_text("# PDF Binding Requests\n\nAmbiguous files require explicit human mapping in inbox/authorized-pdfs/manifest.md.\n", encoding="utf-8")
+        if candidates and len(matches) != 1:
+            (self.root / "binding-requests.md").write_text(
+                "# PDF Binding Requests\n\nAmbiguous or unmatched files require explicit human mapping in inbox/authorized-pdfs/manifest.md.\n\n"
+                + "Files: " + ", ".join(path.name for path in candidates) + "\n",
+                encoding="utf-8",
+            )
         return None
 
     def _parse(self, pdf: Path, identifier: str, fixture: Any | None) -> tuple[tuple[str, ...], tuple[str, ...], str, str]:
@@ -582,8 +660,9 @@ class ResearchStage:
             lines.append(f"- SOURCE_EXCERPT [{paper.identifier} @ {locator}]: {excerpt}")
         path.write_text(existing.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
 
-    def _write_supporting_assets(self, brief: str, papers: Sequence[Paper], records: Mapping[str, Mapping[str, Any]], requests: Sequence[Mapping[str, str]]) -> None:
-        (self.root / "search-log.md").write_text("# Search Log\n\n" + "\n".join(f"- {path}: query derived from confirmed brief" for path in SEARCH_PATHS) + "\n", encoding="utf-8")
+    def _write_supporting_assets(self, brief: str, papers: Sequence[Paper], records: Mapping[str, Mapping[str, Any]], requests: Sequence[Mapping[str, str]], terms: Sequence[str], entity_failures: Sequence[str]) -> None:
+        (self.root / "search-log.md").write_text("# Search Log\n\n" + "\n".join(f"- {path}: query derived from confirmed brief and entity terms" for path in SEARCH_PATHS) + "\n", encoding="utf-8")
+        (self.root / "terms-and-entities.md").write_text("# Terms and Chemistry Entities\n\n" + "\n".join(f"- {term}" for term in terms) + ("\n\n## Provider degradation\n\n" + "\n".join(f"- {failure}" for failure in entity_failures) if entity_failures else "") + "\n", encoding="utf-8")
         (self.root / "comparability-matrix.md").write_text("# Comparability Matrix\n\n| Source | Conditions | Units | Endpoint | Comparable? | Notes |\n| --- | --- | --- | --- | --- | --- |\n" + "\n".join(f"| {record.get('source_id')} | UNKNOWN | UNKNOWN | UNKNOWN | NOT_COMPARABLE until checked | {record.get('claim_relevance', '')} |" for record in records.values()) + "\n", encoding="utf-8")
         (self.root / "research-gaps.md").write_text("# Research Gaps\n\n" + ("\n".join(f"- {request['identity']}: missing full text affects claim: {request['claim_relevance']}" for request in requests) or "- No unresolved download request recorded; claim-level verification remains a human/agent task.") + "\n", encoding="utf-8")
         request_lines = ["# Download Requests", "", "Only use legal routes. Do not bypass login, institutional access, CAPTCHA, or unclear authorization.", ""]
@@ -593,7 +672,7 @@ class ResearchStage:
 
     @staticmethod
     def _handoff(status: str, next_action: str, papers: Sequence[Paper], records: Mapping[str, Mapping[str, Any]], requests: Sequence[Mapping[str, str]]) -> str:
-        lines = ["# Research Handoff", "", f"Result: {status}", "", f"Next action: {next_action}", "", f"Sources registered: {len(papers)}", f"Parsed full texts: {sum(1 for r in records.values() if r.get('parser'))}", "", "## Ownership", "", "Research owns source-registry.md, evidence-notes.md, download-requests.md, the authorized PDF inbox and this handoff. Synthesis may read them but must not rewrite them.", "", "## Full-text route", "", "MinerU is the formal primary parser when configured. pdftotext is a LOW_FIDELITY_FALLBACK only. Original PDFs remain authoritative.", ""]
+        lines = ["# Research Handoff", "", f"Result: {status}", "", f"Next action: {next_action}", "", f"Sources registered: {len(papers)}", f"Parsed full texts: {sum(1 for r in records.values() if r.get('parser'))}", "", "## Ownership", "", "Research owns source-registry.md, provider-status.md, terms-and-entities.md, evidence-notes.md, download-requests.md, the authorized PDF inbox and this handoff. Synthesis may read them but must not rewrite them.", "", "## Full-text route", "", "MinerU is the formal primary parser when configured. pdftotext is a LOW_FIDELITY_FALLBACK only. Original PDFs remain authoritative.", ""]
         if requests:
             lines.extend(["## Waiting for user", "", "The following core papers need a user download or explicit binding:", ""] + [f"- {request['identity']}: {request['url']} → {request['target_inbox']}" for request in requests] + [""])
         if status == "RESEARCH_GAP":
@@ -602,7 +681,9 @@ class ResearchStage:
 
 
 def _paper_from_mapping(row: Mapping[str, Any]) -> Paper:
-    return Paper(str(row.get("identifier") or row.get("doi") or row.get("id") or ""), str(row.get("title") or "Untitled"), str(row.get("doi") or ""), row.get("year"), tuple(str(a) for a in row.get("authors", [])), str(row.get("provider") or "fixture"), str(row.get("abstract") or ""), str(row.get("full_text_url") or ""), str(row.get("access_basis") or ""), str(row.get("priority") or "NORMAL"), str(row.get("claim_relevance") or ""))
+    url = str(row.get("full_text_url") or "")
+    direct = bool(row.get("full_text_direct", url.lower().split("?", 1)[0].endswith(".pdf")))
+    return Paper(str(row.get("identifier") or row.get("doi") or row.get("id") or ""), str(row.get("title") or "Untitled"), str(row.get("doi") or ""), row.get("year"), tuple(str(a) for a in row.get("authors", [])), str(row.get("provider") or "fixture"), str(row.get("abstract") or ""), url, str(row.get("access_basis") or ""), str(row.get("priority") or "NORMAL"), str(row.get("claim_relevance") or ""), direct)
 
 
 def _source_id(identifier: str) -> str:
@@ -638,6 +719,12 @@ def _configured_full_text_adapters() -> tuple[Any, ...]:
     return tuple(adapters)
 
 
+def _configured_entity_adapters() -> tuple[Any, ...]:
+    if not os.environ.get("CHEMICAL_REVIEW_ENABLE_NETWORK", ""):
+        return ()
+    return (PubChemAdapter(), ChebiAdapter())
+
+
 def _load_env_file(path: Path) -> None:
     if not path.is_file():
         return
@@ -661,6 +748,7 @@ def main() -> int:
         _load_env_file(args.project / ".env.local")
     result = ResearchStage(args.project).run(
         fixture_dir=args.fixture_dir,
+        entity_adapters=_configured_entity_adapters(),
         full_text_adapters=_configured_full_text_adapters(),
     )
     print(json.dumps({"status": result.status, "next_action": result.next_action, "papers": len(result.papers), "parsed": result.parsed_count}, ensure_ascii=False))

@@ -59,6 +59,7 @@ python scripts/package_plugin.py
 ```
 
 工程绿灯不等于 Product Use、PUBLIC_E2E、HUMAN_ACCEPTANCE 或科学有效性；这些边界必须分开报告。
+当前边界记录见 [`docs/v2-acceptance-report.md`](docs/v2-acceptance-report.md)。
 
 ## 许可证
 

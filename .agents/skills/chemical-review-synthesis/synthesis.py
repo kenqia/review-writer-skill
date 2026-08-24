@@ -96,8 +96,9 @@ class SynthesisStage:
     def _validate_source_facts(content: str, evidence: str) -> None:
         for match in re.finditer(r"SOURCE_FACT\s*\[([^\]@]+)\s*@\s*([^\]]+)\]", content):
             identity, locator = match.group(1).strip(), match.group(2).strip()
-            if identity not in evidence or locator not in evidence:
-                raise EvidenceBoundaryError(f"SOURCE_FACT locator is not present in Research evidence notes: {identity} @ {locator}")
+            verified = re.search(rf"(?:VERIFIED_)?SOURCE_FACT\s*\[{re.escape(identity)}\s*@\s*{re.escape(locator)}\]", evidence)
+            if not verified:
+                raise EvidenceBoundaryError(f"verified SOURCE_FACT locator is not present in Research evidence notes: {identity} @ {locator}")
 
     def _next_revision(self) -> int:
         if not self.draft_path.exists():

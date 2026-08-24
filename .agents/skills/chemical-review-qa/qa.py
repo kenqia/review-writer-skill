@@ -84,7 +84,9 @@ class QAStage:
             path = round_root / "roles" / slug / "report.md"
             if not path.is_file():
                 raise RuntimeError(f"HUMAN_ACTION_REQUIRED: independent QA report missing for {slug}")
-            reports.append((slug, path.read_text(encoding="utf-8")))
+            text = path.read_text(encoding="utf-8")
+            self._validate_report(slug, text)
+            reports.append((slug, text))
         conflicts = self._conflicts(reports)
         report_lines = ["# QA Review Report", "", f"Round: {round_root.name}", f"Generated: {_now()}", "", "The following reports were produced from isolated clean contexts. The arbiter preserves disagreements; this is advice, not scientific acceptance.", ""]
         for slug, text in reports:
@@ -135,6 +137,15 @@ class QAStage:
             detail = ", ".join(f"{key} ({', '.join(roles)})" for key, roles in severities.items())
             return [f"roles recorded different severities: {detail}"]
         return []
+
+    @staticmethod
+    def _validate_report(slug: str, text: str) -> None:
+        required = ("severity:", "rationale:", "earliest return stage:")
+        missing = [field for field in required if field not in text.lower()]
+        if "locator:" not in text.lower() and " @ " not in text:
+            missing.append("cited locator")
+        if missing:
+            raise RuntimeError(f"HUMAN_ACTION_REQUIRED: QA report {slug} is missing {', '.join(missing)}")
 
     @staticmethod
     def _routes(reports: list[tuple[str, str]]) -> list[tuple[str, str]]:
