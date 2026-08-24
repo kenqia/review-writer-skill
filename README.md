@@ -41,7 +41,7 @@ $chemical-review-qa
 
 Intent 创建 `review-brief.md`；topic-only 草案含未决问题，只有显式确认后 Research 才能继续。已确认意图的变化先写 `review-brief.proposed.md`，确认后才生效。
 
-Research 独占 `research/`：source registry、evidence notes、search log、comparability matrix、research gaps、download requests、`inbox/authorized-pdfs/` 和 handoff。它实现 OpenAlex、Semantic Scholar、Crossref、PubChem、ChEBI、Unpaywall、Europe PMC、CORE 和 MinerU 的可配置接口。全文候选按 `claim_relevance`（受影响的核心论点）进入队列；provider discovery 会从已确认 brief 的核心论点写入候选相关性并标明仍需 metadata/title screening，`priority` 与 `non_substitutability` 负责排序。没有核心论点关联的来源只记录为 gap，不按固定论文数截断队列。公开、直接且授权明确的 PDF 可自动下载；受限或授权不清的论文只生成合法下载地址和用户等待动作。Research 结果是 `READY_FOR_SYNTHESIS`、`WAITING_FOR_USER` 或 `RESEARCH_GAP`。
+Research 独占 `research/`：source registry、evidence notes、search log、comparability matrix、research gaps、download requests、`inbox/authorized-pdfs/` 和 handoff。真实运行先生成 `research/configuration-preflight.md`；缺少网络、推荐全文 provider 或 MinerU 时，必须明确选择配置后重跑、`accept_degraded` 或暂停，不会静默降级。它实现 OpenAlex、Semantic Scholar、Crossref、PubChem、ChEBI、Unpaywall、Europe PMC、CORE 和 MinerU 的可配置接口。全文候选按 `claim_relevance`（受影响的核心论点）进入队列；provider discovery 会从已确认 brief 的核心论点写入候选相关性并标明仍需 metadata/title screening，`priority` 与 `non_substitutability` 负责排序。没有核心论点关联的来源只记录为 gap，不按固定论文数截断队列。公开、直接且授权明确的 PDF 可自动下载；受限或授权不清的论文只生成合法下载地址和用户等待动作。Research 结果是 `READY_FOR_SYNTHESIS`、`WAITING_FOR_USER` 或 `RESEARCH_GAP`。
 
 MinerU 是正式主解析器，`pdftotext` 是明确标注 `LOW_FIDELITY_FALLBACK` 的本地降级；原始 PDF 始终是来源权威，解析文本只是带 locator 的阅读辅助。凭据只能来自环境变量或未跟踪 env 文件，真实值不进入仓库、handoff 或 cache；provider 返回的 credential-bearing signed URL 也不会持久化，会显示 `WITHHELD_CREDENTIAL_BEARING_URL` 并要求重新获取不含凭据的合法 URL。
 

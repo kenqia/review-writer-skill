@@ -25,6 +25,7 @@ from urllib.request import Request, urlopen
 
 
 STAGE_RESULTS = ("READY_FOR_SYNTHESIS", "WAITING_FOR_USER", "RESEARCH_GAP")
+CONFIGURATION_CHOICES = ("configure_and_continue", "accept_degraded", "pause")
 LEGAL_BASES = {"OPEN_ACCESS", "USER_AUTHORIZED", "INSTITUTION_AUTHORIZED"}
 SEARCH_PATHS = (
     "synonyms", "definitions", "methods/materials", "key events",
@@ -48,6 +49,14 @@ _SENSITIVE_URL_KEYS = {
 
 class ProviderUnavailable(RuntimeError):
     """A configured provider failed or is not configured."""
+
+
+class ConfigurationChoiceRequired(RuntimeError):
+    """Research is waiting for an explicit configuration decision."""
+
+
+class ResearchPaused(RuntimeError):
+    """The user explicitly paused Research at the configuration gate."""
 
 
 @dataclass(frozen=True)
@@ -429,9 +438,12 @@ class ResearchStage:
         entity_adapters: Sequence[Any] | None = None,
         full_text_adapters: Sequence[Any] | None = None,
         download_transport: Any | None = None,
+        config_choice: str | None = None,
     ) -> ResearchResult:
         brief = self._confirmed_brief()
         self._ensure_dirs()
+        if fixture_dir is None and adapters is None and entity_adapters is None and full_text_adapters is None:
+            self._configuration_preflight(config_choice)
         fixture = self._load_fixture(fixture_dir)
         if adapters is None:
             adapters = _configured_discovery_adapters()
@@ -522,6 +534,94 @@ class ResearchStage:
         self.inbox.mkdir(parents=True, exist_ok=True)
         for path in (self.root / "fulltext", self.root / "source-records", self.root / "history"):
             path.mkdir(parents=True, exist_ok=True)
+
+    def _configuration_preflight(self, choice: str | None) -> None:
+        rows = self._configuration_rows()
+        missing = [row for row in rows if row["status"] != "READY"]
+        report_path = self.root / "configuration-preflight.md"
+        previous = ""
+        if report_path.is_file():
+            match = re.search(r"^Decision:\s*(\S+)", report_path.read_text(encoding="utf-8"), re.M)
+            previous = match.group(1) if match else ""
+        if choice is not None and choice not in CONFIGURATION_CHOICES:
+            raise ValueError(f"unknown configuration choice: {choice}")
+        if not missing:
+            decision = "CONFIGURED_CONTINUE"
+        elif choice == "pause":
+            decision = "PAUSED"
+        elif choice == "accept_degraded" or (choice is None and previous == "ACCEPT_DEGRADED"):
+            decision = "ACCEPT_DEGRADED"
+        elif choice == "configure_and_continue":
+            decision = "PENDING"
+        else:
+            decision = "PENDING"
+        self._write_configuration_preflight(report_path, decision, rows)
+        if decision == "PAUSED":
+            raise ResearchPaused(f"Research configuration preflight paused; review {report_path}")
+        if decision == "PENDING":
+            raise ConfigurationChoiceRequired(
+                f"Research configuration choice required; review {report_path} and choose one of: {', '.join(CONFIGURATION_CHOICES)}"
+            )
+
+    @staticmethod
+    def _configuration_rows() -> list[dict[str, str]]:
+        network = _env_enabled("CHEMICAL_REVIEW_ENABLE_NETWORK")
+        mineru = bool(os.environ.get("MINERU_COMMAND", "").strip() or os.environ.get("MINERU_ENDPOINT", "").strip())
+        return [
+            {
+                "capability": "Metadata discovery (OpenAlex / Semantic Scholar / Crossref)",
+                "status": "READY" if network else "MISSING",
+                "impact": "Without the network route, Research cannot discover provider candidates.",
+                "recovery": "Set CHEMICAL_REVIEW_ENABLE_NETWORK=true; provider credentials remain optional or provider-specific.",
+            },
+            {
+                "capability": "Chemistry term expansion (PubChem / ChEBI)",
+                "status": "READY" if network else "MISSING",
+                "impact": "Without the network route, synonym and entity expansion is unavailable.",
+                "recovery": "Enable the network route or accept a narrower, manually supplied vocabulary.",
+            },
+            {
+                "capability": "Legal full-text location (Europe PMC)",
+                "status": "READY" if network else "MISSING",
+                "impact": "Without the route, Research cannot automatically locate open full text.",
+                "recovery": "Enable the network route or use legal user downloads recorded in download-requests.md.",
+            },
+            {
+                "capability": "Additional open-access full text (Unpaywall)",
+                "status": "READY" if network and os.environ.get("UNPAYWALL_EMAIL", "").strip() else "OPTIONAL_MISSING",
+                "impact": "Without UNPAYWALL_EMAIL, Unpaywall lookup is skipped.",
+                "recovery": "Set UNPAYWALL_EMAIL in an untracked env file, or accept reduced full-text coverage.",
+            },
+            {
+                "capability": "Additional repository full text (CORE)",
+                "status": "READY" if network and os.environ.get("CORE_API_KEY", "").strip() else "OPTIONAL_MISSING",
+                "impact": "Without CORE_API_KEY, CORE lookup is skipped.",
+                "recovery": "Set CORE_API_KEY in an untracked env file, or accept reduced full-text coverage.",
+            },
+            {
+                "capability": "Primary PDF parser (MinerU)",
+                "status": "READY" if mineru else "MISSING",
+                "impact": "Without MinerU, authorized PDFs use the explicitly marked pdftotext low-fidelity fallback.",
+                "recovery": "Set MINERU_COMMAND or MINERU_ENDPOINT (and MINERU_TOKEN only in an untracked env file).",
+            },
+        ]
+
+    @staticmethod
+    def _write_configuration_preflight(path: Path, decision: str, rows: Sequence[Mapping[str, str]]) -> None:
+        lines = [
+            "# Research Configuration Preflight", "", f"Decision: {decision}", "",
+            "No credential value is recorded here. Research will not start with missing configuration until a user chooses an explicit route.", "",
+            "## Capability check", "", "| Capability | Status | Impact | Recovery |", "| --- | --- | --- | --- |",
+        ]
+        for row in rows:
+            lines.append("| " + " | ".join(str(row[key]).replace("|", "\\|") for key in ("capability", "status", "impact", "recovery")) + " |")
+        lines.extend([
+            "", "## Choices", "",
+            "- `configure_and_continue`: configure all missing recommended capabilities, then rerun Research.",
+            "- `accept_degraded`: continue with the documented degradation and preserve its impact in provider-status.md.",
+            "- `pause`: stop before discovery, full-text location, parsing, and evidence generation.", "",
+        ])
+        path.write_text("\n".join(lines), encoding="utf-8")
 
     @staticmethod
     def _load_fixture(fixture_dir: str | Path | None) -> Mapping[str, Any]:
@@ -992,16 +1092,23 @@ def main() -> int:
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--fixture-dir", type=Path)
     parser.add_argument("--env-file", type=Path)
+    parser.add_argument("--config-choice", choices=CONFIGURATION_CHOICES)
     args = parser.parse_args()
     if args.env_file:
         _load_env_file(args.env_file)
     else:
         _load_env_file(args.project / ".env.local")
-    result = ResearchStage(args.project).run(
-        fixture_dir=args.fixture_dir,
-        entity_adapters=_configured_entity_adapters(),
-        full_text_adapters=_configured_full_text_adapters(),
-    )
+    try:
+        result = ResearchStage(args.project).run(
+            fixture_dir=args.fixture_dir,
+            config_choice=args.config_choice,
+        )
+    except ConfigurationChoiceRequired as exc:
+        print(json.dumps({"action": "CONFIGURATION_CHOICE_REQUIRED", "message": str(exc)}, ensure_ascii=False))
+        return 2
+    except ResearchPaused as exc:
+        print(json.dumps({"action": "CONFIGURATION_PAUSED", "message": str(exc)}, ensure_ascii=False))
+        return 2
     print(json.dumps({"status": result.status, "next_action": result.next_action, "papers": len(result.papers), "parsed": result.parsed_count}, ensure_ascii=False))
     return 0
 

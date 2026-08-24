@@ -85,6 +85,27 @@ class V2ProductTests(unittest.TestCase):
             self.assertIn("homogeneous nickel chemistry", brief)
             self.assertNotIn("must not be copied", brief)
 
+    def test_research_preflight_stops_for_missing_configuration_until_choice(self):
+        research = load_module("v2_research_preflight_test", V2_SKILLS["chemical-review-research"] / "research.py")
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {}, clear=True):
+            project = Path(temp)
+            (project / "review-brief.md").write_text("---\nconfirmed: true\n---\n\n## Topic\nPreflight test\n", encoding="utf-8")
+            stage = research.ResearchStage(project)
+            with self.assertRaisesRegex(RuntimeError, "configuration choice"):
+                stage.run()
+            report = (project / "research" / "configuration-preflight.md").read_text(encoding="utf-8")
+            self.assertIn("Decision: PENDING", report)
+            self.assertIn("accept_degraded", report)
+            self.assertIn("MinerU", report)
+
+            with self.assertRaisesRegex(RuntimeError, "paused"):
+                stage.run(config_choice="pause")
+            self.assertIn("Decision: PAUSED", (project / "research" / "configuration-preflight.md").read_text(encoding="utf-8"))
+
+            result = stage.run(config_choice="accept_degraded")
+            self.assertEqual(result.status, "RESEARCH_GAP")
+            self.assertIn("Decision: ACCEPT_DEGRADED", (project / "research" / "configuration-preflight.md").read_text(encoding="utf-8"))
+
     def test_research_waits_for_restricted_pdf_then_resumes_without_dropping_registry(self):
         research = load_module("v2_research_test", V2_SKILLS["chemical-review-research"] / "research.py")
         intent = load_module("v2_intent_for_research", V2_SKILLS["chemical-review-intent"] / "intent.py")

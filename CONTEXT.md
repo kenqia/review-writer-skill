@@ -76,6 +76,8 @@
 
 **能力优先研究路线**：Research 按当前可用能力选择文献发现、来源获取、解析和综合工具；必要时请求研究者完成最小配置，工具不可用时允许降级并说明受影响的研究能力。
 
+**Research 配置预检门**：真实 Research 在发现、全文定位或解析前生成 `research/configuration-preflight.md`；当网络路由、推荐全文 provider 或 MinerU 缺失时，必须由研究者明确选择 `configure_and_continue`、`accept_degraded` 或 `pause`。这不是新的阶段结果枚举；选择接受降级后仍只返回既有的 `READY_FOR_SYNTHESIS`、`WAITING_FOR_USER` 或 `RESEARCH_GAP`，并在 provider status 与 handoff 中保留影响。
+
 **自适应多路径检索**：围绕同一综述意图并行展开术语、方法/材料、关键事件、引用关系和最新进展等检索路径，并依据新信息对论点和下一步搜索进行调整；它不以固定检索式或固定论文数量定义完成。
 
 **分层文献集**：按对当前综述论点的作用组织锚点/核心论文、扩展论文、背景/定义资料和争议论文的候选集合；层级可以在 Research、Synthesis 和 QA 中被提升、降级或删除。

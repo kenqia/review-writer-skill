@@ -16,6 +16,8 @@
   degradation and recovery action for a fresh legal route.
 - Record HTTP and malformed-response provider degradation through the same
   redacted status path, including entity-expansion failures.
+- Add a Research configuration preflight that requires an explicit
+  configure, accept-degraded, or pause decision before real provider work.
 
 ## 0.2.0-beta.1 — v2 implementation candidate
 
