@@ -12,7 +12,8 @@
 - Populate candidate claim relevance from the confirmed brief on live provider
   discovery so restricted core-paper URLs can enter the user download route.
 - Withhold credential-bearing signed full-text URLs from Research Markdown and
-  cache while preserving an explicit degradation for a fresh legal route.
+  cache while preserving an explicit `WITHHELD_CREDENTIAL_BEARING_URL`
+  degradation and recovery action for a fresh legal route.
 
 ## 0.2.0-beta.1 — v2 implementation candidate
 

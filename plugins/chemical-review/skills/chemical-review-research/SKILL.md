@@ -13,7 +13,7 @@ description: "Discover sources, route legal full text, parse authorized PDFs, an
 
 正式 provider adapters：OpenAlex、Semantic Scholar、Crossref、PubChem、ChEBI、Unpaywall、Europe PMC、CORE。配置来自环境变量或未跟踪 env 文件；凭据不会进入 Markdown/cache。MinerU 是主解析器，`pdftotext` 是明确标注 `LOW_FIDELITY_FALLBACK` 的本地降级。
 
-provider 返回的 signed URL 如果含有 `api_key`、`access_token`、签名或 Bearer 参数，不会写入 registry、handoff 或 download request；Research 会保留真实降级并要求重新获取不含凭据的合法 landing/download URL。
+provider 返回的 signed URL 如果含有 `api_key`、`access_token`、签名、userinfo 或 Bearer 参数，不会写入 registry、handoff 或 download request；Research 会写明 `WITHHELD_CREDENTIAL_BEARING_URL`，保留真实降级并要求重新获取不含凭据的合法 landing/download URL。
 
 ```bash
 python research.py --project /path/to/project --fixture-dir /path/to/fixtures --env-file /path/to/local.env

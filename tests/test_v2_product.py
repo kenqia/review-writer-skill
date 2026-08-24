@@ -214,6 +214,14 @@ class V2ProductTests(unittest.TestCase):
             "",
         )
         self.assertEqual(
+            research._persisted_url("https://oa.example/paper.pdf?X-Amz-Security-Token=URLSECRET"),
+            "",
+        )
+        self.assertEqual(
+            research._persisted_url("https://user:URLSECRET@oa.example/paper.pdf"),
+            "",
+        )
+        self.assertEqual(
             research._persisted_url("https://oa.example/paper.pdf?download=1"),
             "https://oa.example/paper.pdf?download=1",
         )
@@ -291,6 +299,41 @@ class V2ProductTests(unittest.TestCase):
             self.assertIn("https://publisher.example/discovered.pdf", requests)
             self.assertIn("Ligand electronics alter selectivity.", requests)
             self.assertIn("screening still required", requests)
+
+    def test_credential_bearing_full_text_url_is_withheld_with_visible_recovery_action(self):
+        research = load_module("v2_signed_url_route", V2_SKILLS["chemical-review-research"] / "research.py")
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "review-brief.md").write_text(
+                "---\nconfirmed: true\n---\n\n## Topic\nSigned URL test\n",
+                encoding="utf-8",
+            )
+            fixture_dir = project / "fixtures"
+            fixture_dir.mkdir()
+            (fixture_dir / "research.json").write_text(json.dumps({"papers": [{
+                "identifier": "doi:10.1234/signed",
+                "doi": "10.1234/signed",
+                "title": "Signed route",
+                "full_text_url": "https://publisher.example/paper.pdf?X-Amz-Security-Token=URLSECRET",
+                "full_text_direct": False,
+                "access_basis": "RESTRICTED",
+                "priority": "CORE",
+                "claim_relevance": "The core endpoint depends on this paper.",
+            }]}), encoding="utf-8")
+            result = research.ResearchStage(project).run(
+                fixture_dir=fixture_dir,
+                adapters=(),
+                entity_adapters=(),
+                full_text_adapters=(),
+            )
+            self.assertEqual(result.status, "WAITING_FOR_USER")
+            request_text = (project / "research" / "download-requests.md").read_text(encoding="utf-8")
+            handoff_text = (project / "research" / "research-handoff.md").read_text(encoding="utf-8")
+            registry_text = (project / "research" / "source-registry.md").read_text(encoding="utf-8")
+            self.assertIn("WITHHELD_CREDENTIAL_BEARING_URL", request_text)
+            self.assertIn("fresh legal landing/download URL without embedded credentials", request_text)
+            self.assertIn("WITHHELD_CREDENTIAL_BEARING_URL", registry_text)
+            self.assertNotIn("URLSECRET", request_text + handoff_text + registry_text)
 
     def test_configured_open_access_locator_is_downloaded_and_recorded_before_parse(self):
         research = load_module("v2_open_access_route", V2_SKILLS["chemical-review-research"] / "research.py")
