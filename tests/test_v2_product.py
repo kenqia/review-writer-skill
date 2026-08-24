@@ -542,6 +542,158 @@ class V2ProductTests(unittest.TestCase):
             self.assertEqual((sections, locators, parser_name), (("fallback",), ("paper.pdf#page=1",), "pdftotext"))
             self.assertIn("LOW_FIDELITY_FALLBACK", note)
 
+    def test_research_extracts_intent_topic_and_builds_compact_provider_queries(self):
+        research = load_module("v2_topic_query_contract", V2_SKILLS["chemical-review-research"] / "research.py")
+        intent = load_module("v2_topic_query_intent", V2_SKILLS["chemical-review-intent"] / "intent.py")
+
+        class RecordingAdapter:
+            def __init__(self):
+                self.name = "Recorder"
+                self.queries = []
+
+            def search(self, query, limit=5):
+                self.queries.append(query)
+                return ()
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            stage = intent.IntentStage(project)
+            stage.initialize("生成式 AI 分子发现｜Generative AI for Small-Molecule Discovery")
+            stage.confirm({
+                "research_question": "Which generative AI studies experimentally validate new small molecules?",
+                "core_claims": ["Experimental validation must report attempted and confirmed molecules."],
+                "scope": "Peer-reviewed small-molecule chemistry studies since 2020.",
+                "exclusions": "No protein design.",
+                "audience": "Chemists.",
+                "contribution": "Evidence audit.",
+                "evidence_standards": "Original full text and locators.",
+                "boundary_scenarios": "Retain UNKNOWN and Chemical GAP.",
+            })
+            brief = (project / "review-brief.md").read_text(encoding="utf-8")
+            self.assertEqual(research._brief_topic(brief), "生成式 AI 分子发现｜Generative AI for Small-Molecule Discovery")
+            adapter = RecordingAdapter()
+            research.ResearchStage(project)._discover(brief, {}, (adapter,), terms=("small molecule",))
+
+        self.assertTrue(adapter.queries)
+        self.assertTrue(any("small molecule" in query.lower() for query in adapter.queries))
+        self.assertTrue(all("Which generative AI studies" not in query for query in adapter.queries))
+        self.assertTrue(all("core claims:" not in query for query in adapter.queries))
+        self.assertTrue(all(len(query) <= 220 for query in adapter.queries))
+
+    def test_entity_expansion_uses_short_chemical_candidates_not_the_full_question(self):
+        research = load_module("v2_entity_query_contract", V2_SKILLS["chemical-review-research"] / "research.py")
+
+        class RecordingEntity:
+            name = "PubChem"
+
+            def __init__(self):
+                self.terms = []
+
+            def expand(self, term):
+                self.terms.append(term)
+                return ("molecule synonym",)
+
+        brief = (
+            "---\n"
+            "topic: Generative AI for Small-Molecule Discovery\n"
+            "confirmed: true\n"
+            "---\n\n"
+            "# Review Brief\n\n"
+            "Topic: Generative AI for Small-Molecule Discovery\n\n"
+            "## Research question\n"
+            "Which generative AI studies experimentally validate new small molecules?\n\n"
+            "## Core-claim candidates\n"
+            "- Experimental validation must report attempted and confirmed molecules.\n"
+        )
+        adapter = RecordingEntity()
+        terms, failures = research.ResearchStage._expand_entities(brief, (adapter,))
+
+        self.assertFalse(failures)
+        self.assertTrue(adapter.terms)
+        self.assertTrue(all(len(term) <= 80 for term in adapter.terms))
+        self.assertTrue(all("Which generative AI studies" not in term for term in adapter.terms))
+        self.assertTrue(any("small molecule" in term.lower() for term in adapter.terms))
+        self.assertIn("molecule synonym", terms)
+
+    def test_mineru_command_receives_input_dir_for_a_single_pdf(self):
+        research = load_module("v2_mineru_input_dir_contract", V2_SKILLS["chemical-review-research"] / "research.py")
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            return research.subprocess.CompletedProcess(command, 0, stdout="parsed markdown", stderr="")
+
+        with tempfile.TemporaryDirectory() as temp, patch.object(research.subprocess, "run", side_effect=fake_run):
+            pdf = Path(temp) / "paper.pdf"
+            pdf.write_bytes(b"%PDF fixture")
+            sections, _locators, _note = research.MinerUParser(command="mineru --output markdown").parse(pdf, "doi:10.1/x")
+
+        self.assertEqual(sections, ("parsed markdown",))
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--input-dir", calls[0])
+        self.assertIn(str(pdf.parent), calls[0])
+
+    def test_mineru_prefers_structured_markdown_over_batch_progress_logs(self):
+        research = load_module("v2_mineru_markdown_output_contract", V2_SKILLS["chemical-review-research"] / "research.py")
+
+        def fake_run(command, **kwargs):
+            output_dir = Path(command[command.index("--output-dir") + 1])
+            markdown = output_dir / "markdown"
+            markdown.mkdir(parents=True)
+            (markdown / "paper.md").write_text("# Parsed paper\n\nResults", encoding="utf-8")
+            return research.subprocess.CompletedProcess(command, 0, stdout="[upload] paper.pdf\n[poll] done", stderr="")
+
+        with tempfile.TemporaryDirectory() as temp, patch.object(research.subprocess, "run", side_effect=fake_run):
+            pdf = Path(temp) / "paper.pdf"
+            pdf.write_bytes(b"%PDF fixture")
+            sections, _locators, _note = research.MinerUParser(command="mineru").parse(pdf, "doi:10.1/x")
+
+        self.assertEqual(sections, ("# Parsed paper\n\nResults",))
+
+    def test_mineru_keeps_single_pdf_wrapper_compatibility_after_batch_attempt(self):
+        research = load_module("v2_mineru_wrapper_compatibility", V2_SKILLS["chemical-review-research"] / "research.py")
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if "--input-dir" in command:
+                return research.subprocess.CompletedProcess(command, 2, stdout="", stderr="wrapper expects a PDF path")
+            return research.subprocess.CompletedProcess(command, 0, stdout="wrapped markdown", stderr="")
+
+        with tempfile.TemporaryDirectory() as temp, patch.object(research.subprocess, "run", side_effect=fake_run):
+            pdf = Path(temp) / "paper.pdf"
+            pdf.write_bytes(b"%PDF fixture")
+            sections, _locators, _note = research.MinerUParser(command="mineru-wrapper").parse(pdf, "doi:10.1/x")
+
+        self.assertEqual(sections, ("wrapped markdown",))
+        self.assertEqual(len(calls), 2)
+        self.assertIn("--input-dir", calls[0])
+        self.assertEqual(calls[1][-1], str(pdf))
+
+    def test_mineru_preflight_is_not_ready_without_a_real_pdf_probe(self):
+        research = load_module("v2_mineru_preflight_contract", V2_SKILLS["chemical-review-research"] / "research.py")
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"MINERU_COMMAND": "mineru"}, clear=True):
+            rows = research.ResearchStage(Path(temp))._configuration_rows()
+
+        mineru = next(row for row in rows if row["capability"] == "Primary PDF parser (MinerU)")
+        self.assertEqual(mineru["status"], "NOT_VERIFIED")
+
+    def test_mineru_preflight_runs_a_real_pdf_probe_before_ready(self):
+        research = load_module("v2_mineru_preflight_probe", V2_SKILLS["chemical-review-research"] / "research.py")
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"MINERU_COMMAND": "mineru"}, clear=True):
+            project = Path(temp)
+            inbox = project / "research" / "inbox" / "authorized-pdfs"
+            inbox.mkdir(parents=True)
+            pdf = inbox / "authorized.pdf"
+            pdf.write_bytes(b"%PDF fixture")
+            with patch.object(research.MinerUParser, "parse", return_value=(("parsed",), ("authorized.pdf#page=1",), "probe")) as parse:
+                rows = research.ResearchStage(project)._configuration_rows()
+
+        mineru = next(row for row in rows if row["capability"] == "Primary PDF parser (MinerU)")
+        self.assertEqual(mineru["status"], "READY")
+        parse.assert_called_once()
+        self.assertEqual(parse.call_args.args[0], pdf)
+
     def test_unmatched_inbox_pdf_is_held_for_explicit_binding(self):
         research = load_module("v2_binding_research", V2_SKILLS["chemical-review-research"] / "research.py")
         intent = load_module("v2_binding_intent", V2_SKILLS["chemical-review-intent"] / "intent.py")
@@ -702,6 +854,152 @@ class V2ProductTests(unittest.TestCase):
             self.assertTrue((project / "review-brief.md").is_file())
             self.assertTrue((project / "research" / "source-registry.md").is_file())
             self.assertTrue((project / "draft.md").is_file())
+
+    def test_research_manifest_screens_candidates_and_projects_four_layer_evidence(self):
+        research = load_module("v2_manifest_screening", V2_SKILLS["chemical-review-research"] / "research.py")
+        intent = load_module("v2_manifest_intent", V2_SKILLS["chemical-review-intent"] / "intent.py")
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            stage = intent.IntentStage(project)
+            stage.initialize("Generative AI for Small-Molecule Discovery")
+            stage.confirm({
+                "research_question": "Which generative AI studies experimentally validate new small molecules?",
+                "core_claims": ["Experimental validation must report attempted and confirmed molecules."],
+                "scope": "Peer-reviewed small-molecule chemistry studies since 2020.",
+                "exclusions": "No protein design, reviews or workshop papers.",
+                "audience": "Chemists.", "contribution": "Evidence audit.",
+                "evidence_standards": "Original full text and locators.",
+                "boundary_scenarios": "Retain UNKNOWN, NOT_COMPARABLE and Chemical GAP.",
+            })
+            fixture_dir = project / "fixtures"
+            fixture_dir.mkdir()
+            (fixture_dir / "research.json").write_text(json.dumps({
+                "papers": [
+                    {"identifier": "doi:10.1000/core", "doi": "10.1000/core", "title": "Generative AI for small-molecule discovery", "abstract": "We generate and experimentally validate novel small molecules.", "year": 2024, "publication_type": "journal-article", "full_text_url": "https://oa.example/core.pdf", "full_text_direct": True, "access_basis": "OPEN_ACCESS", "priority": "CORE", "claim_relevance": "Experimental validation must report attempted and confirmed molecules."},
+                    {"identifier": "doi:10.1000/core-v2", "doi": "10.1000/core", "title": "Generative AI for small-molecule discovery (version)", "abstract": "duplicate version", "year": 2024, "publication_type": "journal-article", "provider": "second", "claim_relevance": "duplicate"},
+                    {"identifier": "doi:10.1000/protein", "doi": "10.1000/protein", "title": "Generative AI for protein design", "abstract": "protein sequences only", "year": 2024, "publication_type": "journal-article", "full_text_url": "https://oa.example/protein.pdf", "full_text_direct": True, "access_basis": "OPEN_ACCESS", "priority": "CORE"},
+                    {"identifier": "doi:10.1000/review", "doi": "10.1000/review", "title": "A review of molecular discovery", "abstract": "survey", "year": 2024, "publication_type": "review", "full_text_url": "https://oa.example/review.pdf", "full_text_direct": True, "access_basis": "OPEN_ACCESS", "priority": "CORE", "claim_relevance": "context"},
+                    {"identifier": "doi:10.1000/old", "doi": "10.1000/old", "title": "Small molecule discovery before the range", "abstract": "old chemistry", "year": 2010, "publication_type": "journal-article", "claim_relevance": "out of range"},
+                ],
+                "parsed": {"doi:10.1000/core": {"parser": "MinerU", "sections": ["Results: 12 attempted molecules; 4 confirmed by NMR. Limitation: assay scope was narrow."], "locators": ["core.pdf#page=3#section=Results"]}},
+            }), encoding="utf-8")
+
+            class Download:
+                def request(self, method, url, *, headers, body=None, timeout):
+                    return research.HttpResponse(200, {"content-type": "application/pdf"}, b"%PDF core")
+
+            result = research.ResearchStage(project).run(fixture_dir=fixture_dir, download_transport=Download())
+            self.assertEqual(result.status, "READY_FOR_SYNTHESIS")
+            manifest = json.loads((project / "research" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["brief_revision"], 2)
+            self.assertEqual(manifest["coverage"]["raw_hits"], 5)
+            self.assertEqual(manifest["coverage"]["unique_candidates"], 4)
+            decisions = {row["identifier"]: row["screening"]["decision"] for row in manifest["candidates"]}
+            self.assertEqual(decisions["doi:10.1000/core"], "INCLUDE")
+            self.assertEqual(decisions["doi:10.1000/protein"], "EXCLUDE")
+            self.assertEqual(decisions["doi:10.1000/review"], "EXCLUDE")
+            self.assertEqual(decisions["doi:10.1000/old"], "EXCLUDE")
+            self.assertEqual(manifest["coverage"]["downloaded_pdfs"], 1)
+            self.assertEqual(manifest["coverage"]["mineru_success"], 1)
+            self.assertIn("research_kernel", manifest["evidence_matrix"]["layers"])
+            self.assertIn("SOURCE_FACT", manifest["evidence_matrix"]["claim_vocabulary"])
+            self.assertIn("candidate_denominator", manifest["evidence_matrix"]["review_specific_fields"])
+            evidence = manifest["sources"][0]["evidence_fields"]
+            self.assertEqual(evidence["evidence_level"], "EXCERPT")
+            self.assertEqual(evidence["candidate_denominator"], "12")
+            self.assertEqual(evidence["identity_confirmation"], "4 confirmed by NMR")
+            handoff = (project / "research" / "research-handoff.md").read_text(encoding="utf-8")
+            self.assertIn("Raw hits: 5", handoff)
+            self.assertIn("Excluded: 3", handoff)
+            self.assertIn("Evidence-ready: 1", handoff)
+            self.assertTrue((project / "research" / "evidence-matrix.md").is_file())
+            self.assertNotIn("protein.pdf", (project / "research" / "download-requests.md").read_text(encoding="utf-8"))
+
+    def test_research_optional_capabilities_do_not_block_and_provider_states_are_real(self):
+        research = load_module("v2_capability_states", V2_SKILLS["chemical-review-research"] / "research.py")
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"CHEMICAL_REVIEW_ENABLE_NETWORK": "1", "UNPAYWALL_EMAIL": "", "CORE_API_KEY": ""}, clear=True):
+            project = Path(temp)
+            (project / "review-brief.md").write_text("---\nconfirmed: true\nrevision: 1\n---\n\nTopic: chemistry\n", encoding="utf-8")
+            class Discovery:
+                name = "Fixture discovery"
+                last_status = "USABLE_RESULTS"
+                last_error = ""
+                def search(self, query, limit=5):
+                    return ()
+            parser = research.MinerUParser(command="mineru")
+            with patch.object(research.ResearchStage, "_mineru_probe", return_value=("READY", "fixture probe")):
+                rows = research.ResearchStage(project)._configuration_rows(discovery_adapters=(Discovery(),), parser=parser)
+            by_name = {row["capability"]: row for row in rows}
+            self.assertEqual(by_name["Additional open-access full text (Unpaywall)"]["status"], "OPTIONAL_MISSING")
+            self.assertEqual(by_name["Additional repository full text (CORE)"]["status"], "OPTIONAL_MISSING")
+            self.assertTrue(all(row["status"] != "MISSING" for row in rows if row["status"] == "OPTIONAL_MISSING"))
+            self.assertIn(by_name["Metadata discovery (OpenAlex / Semantic Scholar / Crossref)"]["status"], {"REACHABLE", "USABLE_RESULTS"})
+            self.assertEqual(by_name["Chemistry term expansion (PubChem / ChEBI)"]["status"], "CONFIGURED")
+
+    def test_verified_evidence_promotion_updates_manifest_and_evidence_handoff(self):
+        research = load_module("v2_verified_evidence_promotion", V2_SKILLS["chemical-review-research"] / "research.py")
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "review-brief.md").write_text("---\nconfirmed: true\nrevision: 1\n---\n\nTopic: molecular discovery\n", encoding="utf-8")
+            stage = research.ResearchStage(project)
+            stage._ensure_dirs()
+            source = {"identifier": "doi:10.1234/verified", "doi": "10.1234/verified", "title": "Verified", "source_id": "verified", "evidence_fields": {"key_result": "4 confirmed molecules"}, "locators": ["paper.pdf#page=2"]}
+            stage._write_manifest_file({"brief_revision": 1, "sources": [source], "evidence_matrix": {"evidence_levels": {}}})
+            promoted = stage.promote_evidence("doi:10.1234/verified", locators=("paper.pdf#page=2",), verifier="human-editor")
+            self.assertEqual(promoted["evidence_fields"]["evidence_level"], "VERIFIED")
+            self.assertIn("VERIFIED_SOURCE_FACT", (project / "research" / "evidence-notes.md").read_text(encoding="utf-8"))
+
+    def test_intent_optional_expert_review_isolated_and_confirmation_gated(self):
+        intent = load_module("v2_intent_expert_review", V2_SKILLS["chemical-review-intent"] / "intent.py")
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            stage = intent.IntentStage(project)
+            stage.initialize("molecular discovery")
+            stage.confirm({
+                "research_question": "How are generated molecules experimentally validated?",
+                "core_claims": ["Validation quality varies."], "scope": "Small molecules since 2020.",
+                "exclusions": "No proteins.", "audience": "Chemists.", "contribution": "Evidence map.",
+                "evidence_standards": "Original full text.", "boundary_scenarios": "Keep UNKNOWN.",
+            })
+            canonical_before = (project / "review-brief.md").read_bytes()
+            (project / "stale.md").write_text("stale secret", encoding="utf-8")
+            skipped = stage.optional_expert_review("skip", reviewer=lambda _payload: None)
+            self.assertEqual(skipped.decision, "SKIPPED")
+            self.assertEqual(canonical_before, (project / "review-brief.md").read_bytes())
+            self.assertFalse((project / "review-brief.proposed.md").exists())
+
+            class Reviewer:
+                def __init__(self): self.payload = None
+                def review(self, payload):
+                    self.payload = payload
+                    return {"findings": [{"id": "f1", "module": "evidence", "severity": "HIGH", "affected_field": "evidence_standards", "rationale": "Need identity confirmation.", "suggested_change": "Require identity confirmation and assay endpoint.", "confidence": "HIGH", "unresolved_questions": ["Which assay?"]}]}
+            reviewer = Reviewer()
+            report = stage.optional_expert_review("yes", reviewer=reviewer, materials=(project / "stale.md",))
+            self.assertTrue(report.success)
+            self.assertIn("evidence", stage.grouped_expert_findings())
+            self.assertIn("advisory", (project / "expert-review-report.md").read_text(encoding="utf-8").lower())
+            self.assertNotIn("stale secret", json.dumps(reviewer.payload))
+            decision = stage.apply_expert_review_decision("accept-selected", selected=["f1"])
+            self.assertEqual(decision, "PROPOSED")
+            self.assertEqual(canonical_before, (project / "review-brief.md").read_bytes())
+            self.assertTrue((project / "review-brief.proposed.md").exists())
+            with self.assertRaises(intent.ConfirmationRequired):
+                stage.read_confirmed()
+            stage.confirm_change()
+            self.assertIn("identity confirmation", (project / "review-brief.md").read_text(encoding="utf-8"))
+
+    def test_intent_expert_failure_rejects_mutation_and_records_honest_boundary(self):
+        intent = load_module("v2_intent_expert_failure", V2_SKILLS["chemical-review-intent"] / "intent.py")
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            stage = intent.IntentStage(project)
+            stage.initialize("chemistry")
+            stage.confirm({key: ("claim",) if key == "core_claims" else "value" for key, _ in intent.FIELDS})
+            before = (project / "review-brief.md").read_bytes()
+            result = stage.optional_expert_review("yes", reviewer=lambda _payload: {"bad": "shape"})
+            self.assertFalse(result.success)
+            self.assertEqual(before, (project / "review-brief.md").read_bytes())
+            self.assertIn("MALFORMED", (project / "expert-review-report.md").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

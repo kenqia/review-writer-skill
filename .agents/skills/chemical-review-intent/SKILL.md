@@ -9,6 +9,8 @@ description: "Turn a chemistry review topic into a confirmed review-brief.md han
 
 Intent 独占综述问题、核心论点候选、范围、排除项、读者、预期贡献、证据标准和边界场景。首次 topic-only 输入只生成带 Open question 的草案；Research 只能消费 `confirmed: true` 的 brief。已确认 brief 的变化先写 `review-brief.proposed.md`，必须得到明确确认后才替换当前 brief。
 
+完整 brief 展示后可选择运行一次隔离的化学文献综述期刊审查。该审查是可选 advisory check：reviewer 只接收当前 brief 与显式 allowlisted material，输出独立的 `expert-review-report.json`/`.md`；它不能读取旧文件、凭据或隐藏上下文，也不能修改 `review-brief.md`、Research 或 draft。主会话按 research question、scope、evidence、terminology、Evidence Matrix 和 journal-fit 模块呈现建议，用户可 skip、reject-all、defer 或 accept-selected。接受的建议只写 `review-brief.proposed.md`，仍必须调用现有 `confirm-change` 才能交给 Research；失败、超时或 malformed output 都保持 canonical brief 不变。
+
 下一阶段：确认后运行 `$chemical-review-research`。
 
 CLI 示例：
@@ -18,6 +20,9 @@ python intent.py init --project /path/to/project --topic 'nickel-mediated C-C co
 python intent.py confirm --project /path/to/project --decisions-json decisions.json
 python intent.py propose-change --project /path/to/project --changes-json changes.json
 python intent.py confirm-change --project /path/to/project
+# optional advisory check (a fixture JSON may stand in for an isolated reviewer in tests)
+python intent.py expert-review --project /path/to/project --choice yes --fixture-json reviewer-report.json
+python intent.py expert-decision --project /path/to/project --decision accept-selected --selected finding-1
 ```
 
 Intent 不导入旧 `chemical-review` orchestrator、Prototype/PRD/Issues/Implement payload，也不写 Research、Synthesis 或 QA 资产。
