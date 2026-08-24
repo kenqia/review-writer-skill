@@ -15,6 +15,11 @@ from orchestrator import (  # noqa: E402
     _document,
     _split_frontmatter,
 )
+from delivery import (  # noqa: E402
+    FigureAsset,
+    FigureInventory,
+    JournalProfile,
+)
 from review import (  # noqa: E402
     IntegrityFinding,
     JournalAdaptation,
@@ -278,6 +283,99 @@ class ReviewDeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(FileNotFoundError, "research-evidence.md"):
                 orchestrator.run_review(self._assessment(), self._journal_adaptation())
 
+    def test_candidate_package_requires_research_writing_unit_kind(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._review_ready_project(project_dir)
+            Path(project_dir, "units", "fixture-unit.md").write_text(
+                _document(
+                    {"kind": "wrong-unit-kind", "schema": "1", "status": "MERGED"},
+                    "# Research/Writing Unit: fixture-unit\n",
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError, r"fixture-unit\.md.*research-writing-unit"
+            ):
+                orchestrator.run_review(self._assessment(), self._journal_adaptation())
+
+    def test_candidate_package_requires_delivery_evidence_and_nonempty_figure_inventory(self):
+        required = (
+            "source-registry.md",
+            "coverage-matrix.md",
+            "figure-inventory.md",
+            "generic-chemistry-draft.docx.manifest.md",
+        )
+        for name in required:
+            with self.subTest(missing=name), TemporaryDirectory() as project_dir:
+                orchestrator = self._review_ready_project(project_dir)
+                Path(project_dir, name).unlink()
+                # The source registry is currently only reached through the optional
+                # figure path; remove that path too so the regression proves the
+                # registry itself is a required candidate asset.
+                if name == "source-registry.md":
+                    Path(project_dir, "figure-inventory.md").unlink()
+
+                with self.assertRaisesRegex(FileNotFoundError, name):
+                    orchestrator.run_review(self._assessment(), self._journal_adaptation())
+
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._review_ready_project(project_dir)
+            Path(project_dir, "figure-inventory.md").write_text(
+                "---\nkind: figure-inventory\nschema: 1\nasset_count: 0\n---\n\n"
+                "# Figure/Scheme/Table Inventory\n\n## Assets\nNone recorded.\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "exists but contains no figure assets"):
+                orchestrator.run_review(self._assessment(), self._journal_adaptation())
+
+    def test_journal_adaptation_requires_persisted_profile(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._review_ready_project(project_dir)
+            Path(project_dir, "journal-profile.md").unlink()
+
+            with self.assertRaisesRegex(FileNotFoundError, "journal-profile.md"):
+                orchestrator.run_review(self._assessment(), self._journal_adaptation())
+
+    def test_journal_adaptation_requires_profile_matching_saved_guide(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._review_ready_project(project_dir)
+            profile_path = Path(project_dir, "journal-profile.md")
+            profile_path.write_text(
+                profile_path.read_text(encoding="utf-8").replace(
+                    "Target journal\nExample Chemistry", "Target journal\nOther Chemistry"
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "journal-profile.md"):
+                orchestrator.run_review(self._assessment(), self._journal_adaptation())
+
+    def test_empty_figure_inventory_is_valid_for_an_explicit_no_figure_project(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._review_ready_project(project_dir)
+            registry_path = Path(project_dir, "source-registry.md")
+            registry_path.write_text(
+                registry_path.read_text(encoding="utf-8").replace("table-1 | none", "none | none"),
+                encoding="utf-8",
+            )
+            Path(project_dir, "figure-inventory.md").write_text(
+                "---\nkind: figure-inventory\nschema: 1\nasset_count: 0\n---\n\n"
+                "# Figure/Scheme/Table Inventory\n\n## Assets\nNone recorded.\n",
+                encoding="utf-8",
+            )
+            Path(project_dir, "generic-chemistry-draft.docx").unlink()
+            Path(project_dir, "generic-chemistry-draft.docx.manifest.md").unlink()
+            orchestrator.export_docx()
+
+            result = orchestrator.run_review(self._assessment(), self._journal_adaptation())
+
+            self.assertEqual(result.status, "CANDIDATE_READY")
+            package = Path(project_dir, "submission-candidate-package.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("figure-inventory.md", package)
+
     def test_reader_only_delivery_does_not_require_journal_adaptation(self):
         with TemporaryDirectory() as project_dir:
             orchestrator = self._review_ready_project(project_dir)
@@ -408,6 +506,15 @@ class ReviewDeliveryTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        JournalProfile.selected(
+            target_journal="Example Chemistry",
+            guide_locator="https://example.org/official-author-guide",
+            guide_retrieved_at="2026-08-23",
+            guide_digest=hashlib.sha256(
+                b"Review format and graphical abstract requirements."
+            ).hexdigest(),
+            requirements=("Margins: 1 inch",),
+        ).persist(root)
         if blocks is None:
             blocks = (
                 self._block(
@@ -451,6 +558,45 @@ class ReviewDeliveryTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        root.joinpath("source-registry.md").write_text(
+            _document(
+                {"kind": "research-source-registry", "schema": "1"},
+                "# Source Registry\n\n"
+                "| Source ID | Identity | Access basis | Full text | Parser | Media IDs | Digest |\n"
+                "| --- | --- | --- | --- | --- | --- | --- |\n"
+                "| paper-1 | paper-1 | OPEN_ACCESS | FOUND | PARSED | table-1 | none |\n"
+                "| paper-2 | paper-2 | OPEN_ACCESS | FOUND | PARSED | none | none |\n",
+            ),
+            encoding="utf-8",
+        )
+        root.joinpath("coverage-matrix.md").write_text(
+            _document(
+                {"kind": "research-coverage-matrix", "schema": "1"},
+                "# Coverage Matrix\n\nCoverage recorded for the selected evidence.\n",
+            ),
+            encoding="utf-8",
+        )
+        inventory = FigureInventory(root)
+        inventory.register_source_asset(
+            FigureAsset(
+                asset_id="table-1",
+                asset_type="TABLE",
+                source_id="paper-1",
+                source_path="",
+                locator="p. 1, Table 1",
+                caption="Reported conditions.",
+                provenance="Transcribed from the cited paper.",
+                table_rows=(("Entry", "Yield"), ("A", "84%")),
+                target_section="Background",
+                target_paragraph="P-1",
+                claim_ids=("Merge 2 · Block",),
+                citation_ids=("paper-1",),
+                extraction_status="VERIFIED",
+            )
+        )
+        inventory.persist()
+        orchestrator = ChemicalReviewOrchestrator(project_dir)
+        orchestrator.export_docx()
         return ChemicalReviewOrchestrator(project_dir)
 
     def _block(

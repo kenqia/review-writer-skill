@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -17,6 +18,7 @@ from delivery import FigureInventory  # noqa: E402
 import research as _research  # noqa: E402
 
 FullTextResult = _research.FullTextResult
+LocalPdftotextParserAdapter = _research.LocalPdftotextParserAdapter
 PaperRecord = _research.PaperRecord
 ParsedMedia = _research.ParsedMedia
 ResearchConfig = _research.ResearchConfig
@@ -188,6 +190,33 @@ class ResearchDoctorContractTests(unittest.TestCase):
             self.assertIn("bounded discovery", evidence.lower())
             self.assertTrue(Path(project_dir, "research-setup-wizard.md").exists())
 
+    def test_no_key_fallback_connects_detected_local_pdftotext_parser(self):
+        with patch.object(_research.shutil, "which", return_value="/usr/bin/pdftotext"):
+            config = ResearchConfig.no_key_fallback()
+
+        self.assertEqual(
+            [adapter.name for adapter in config.parsers],
+            ["pdftotext"],
+        )
+
+    def test_local_pdftotext_parser_emits_page_locators_and_chunk_count(self):
+        document = LocalPdftotextParserAdapter().parse(
+            FullTextResult(
+                paper_id="local-pdf:fixture",
+                status="FOUND",
+                text="INTRODUCTION\nFirst page.\fRESULTS\nSecond page.\f",
+                source="UserAuthorizedPDF",
+                locator="paper.pdf#local-pdf",
+                access_basis="USER_AUTHORIZED",
+                local_path="paper.pdf",
+            )
+        )
+
+        self.assertEqual(document.parser, "pdftotext")
+        self.assertEqual(document.locators, ("paper.pdf#page=1", "paper.pdf#page=2"))
+        self.assertEqual(len(document.sections), 2)
+        self.assertIn("INTRODUCTION", document.sections[0])
+
     def test_user_pdf_is_registered_and_cloud_parser_requires_project_consent(self):
         with TemporaryDirectory() as project_dir:
             orchestrator = self._ready(project_dir)
@@ -263,6 +292,7 @@ class ResearchDoctorContractTests(unittest.TestCase):
             self.assertIn('"query_count"', ledger)
             self.assertIn('"request_count"', ledger)
             self.assertIn('"cache_hits"', ledger)
+            self.assertIn('"parser_chunks": 0', ledger)
             self.assertIn("coverage", result.assets)
 
     def test_identical_run_reuses_query_cache_after_cold_restart(self):
@@ -314,6 +344,30 @@ class ResearchDoctorContractTests(unittest.TestCase):
             registry = (root / "source-registry.md").read_text(encoding="utf-8")
             self.assertIn(asset.source_id, registry)
             self.assertIn(asset.asset_id, registry)
+            ledger = json.loads((root / "run-budget.json").read_text(encoding="utf-8"))
+            self.assertEqual(ledger["parser_chunks"], 1)
+
+    def test_cached_parse_records_reused_chunk_count(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._ready(project_dir)
+            discovery = _Discovery((PaperRecord("p-chunks", "P"),))
+            full_text = _FullText("authorized text")
+            parser = _LocalParser()
+            config = ResearchConfig(
+                discovery=(discovery,),
+                full_text=(full_text,),
+                parsers=(parser,),
+                budget=ResearchBudget(max_queries=10, max_requests=20),
+            )
+            orchestrator.run_research(config)
+
+            ChemicalReviewOrchestrator(project_dir).run_research(config)
+
+            ledger = json.loads(
+                Path(project_dir, "run-budget.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(parser.calls, ["p-chunks"])
+            self.assertEqual(ledger["parser_chunks"], 1)
 
     def test_output_budget_rejection_is_not_cached_as_a_free_result(self):
         with TemporaryDirectory() as project_dir:
@@ -404,6 +458,10 @@ class ResearchDoctorContractTests(unittest.TestCase):
                 encoding="utf-8"
             )
             self.assertIn("cached parsed document", evidence)
+            ledger = json.loads(
+                Path(project_dir, "run-budget.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(ledger["parser_chunks"], 0)
 
 
 class ResearchDoctorProductUseAcceptanceTests(unittest.TestCase):

@@ -163,6 +163,7 @@ class ReviewRunResult:
 
 @dataclass(frozen=True)
 class _ContentBlock:
+    claim_id: str
     section: str
     claim_level: str
     contribution_type: str
@@ -188,6 +189,13 @@ class ReviewRunner:
         "literature-set.md": "layered-literature-set",
         "review-blueprint.md": "review-blueprint",
         "unit-plan.md": "research-writing-unit-plan",
+        # Candidate delivery is not complete without the evidence and export
+        # projections that make the package auditable after a cold restart.
+        "source-registry.md": "research-source-registry",
+        "coverage-matrix.md": "research-coverage-matrix",
+        # ``figure-inventory.md`` is required even for a generic/no-figure
+        # draft; an empty inventory is an explicit no-figure decision.
+        "figure-inventory.md": "figure-inventory",
     }
 
     def __init__(self, project_root: str | Path, *, today: date | None = None) -> None:
@@ -368,77 +376,44 @@ class ReviewRunner:
                     raise ValueError(
                         f"SOURCE_FACT evidence is not claim-ready: {evidence_id} ({matched})"
                     )
-        figure_path = self.project_root / "figure-inventory.md"
-        if figure_path.exists():
-            from delivery import FigureInventory
+        # Validate the required visual projection even when it contains no
+        # assets.  A no-figure project must persist that empty inventory rather
+        # than silently omitting the decision.  If the registry declares media
+        # IDs while the inventory is empty, fail closed on the inconsistency.
+        from delivery import FigureInventory, _validate_figure_content_bindings
 
-            figures = FigureInventory.load(self.project_root).validate_for_delivery()
-            section_counts: dict[str, int] = {}
-            evidence_ids = {
-                evidence_id for block in blocks for evidence_id in block.evidence_ids
-            }
-            evidence_identity_keys = {
-                key
-                for evidence_id in evidence_ids
-                for key in _source_identity_keys(evidence_id)
-            }
-            for block in blocks:
-                section_counts[block.section] = section_counts.get(block.section, 0) + 1
-            for figure in figures:
-                if figure.target_section not in section_counts:
-                    raise ValueError(
-                        f"Figure {figure.asset_id} targets an absent content section."
-                    )
-                expected_paragraphs = {
-                    f"P-{index}" for index in range(1, section_counts[figure.target_section] + 1)
-                }
-                if figure.target_paragraph not in expected_paragraphs:
-                    raise ValueError(
-                        f"Figure {figure.asset_id} targets an absent content paragraph."
-                    )
-                if not any(
-                    _source_identity_keys(citation) & evidence_identity_keys
-                    for citation in figure.citation_ids
-                ):
-                    raise ValueError(
-                        f"Figure {figure.asset_id} is not bound to a cited content source."
-                    )
-            registry_path = self.project_root / "source-registry.md"
-            if not registry_path.exists():
-                raise FileNotFoundError(
-                    "Figure delivery requires source-registry.md for source identity binding."
-                )
-            registry = _source_registry_bindings(
-                registry_path.read_text(encoding="utf-8")
+        figures = FigureInventory.load(self.project_root).validate_for_delivery()
+        _validate_figure_content_bindings(blocks, figures)
+        registry = _source_registry_bindings(
+            (self.project_root / "source-registry.md").read_text(encoding="utf-8")
+        )
+        if not figures and any(
+            record.get("media_ids", "").strip().casefold() not in {"", "none", "n/a"}
+            for record in registry
+        ):
+            raise ValueError(
+                "figure-inventory.md exists but contains no figure assets while "
+                "source-registry.md declares media IDs."
             )
-            for figure in figures:
-                if not any(
-                    _source_identity_keys(figure.source_id)
-                    & (_source_identity_keys(record["source_id"]) | _source_identity_keys(record["identity"]))
-                    for record in registry
-                ):
-                    raise ValueError(
-                        f"Figure {figure.asset_id} source identity is absent from source-registry.md."
-                    )
-        optional_delivery_assets = {
-            "source-registry.md": "research-source-registry",
-            "coverage-matrix.md": "research-coverage-matrix",
-            "figure-inventory.md": "figure-inventory",
-        }
-        for name, expected_kind in optional_delivery_assets.items():
-            path = self.project_root / name
-            if not path.exists():
-                continue
-            metadata, _ = _split_frontmatter(path.read_text(encoding="utf-8"))
-            if metadata.get("kind") != expected_kind:
+        for figure in figures:
+            if not any(
+                _source_identity_keys(figure.source_id)
+                & (_source_identity_keys(record["source_id"]) | _source_identity_keys(record["identity"]))
+                for record in registry
+            ):
                 raise ValueError(
-                    f"{name} has the wrong asset kind; expected {expected_kind}."
+                    f"Figure {figure.asset_id} source identity is absent from source-registry.md."
                 )
-            assets.append(name)
         canonical_content_digest = hashlib.sha256(
             (self.project_root / "review-content.md").read_bytes()
         ).hexdigest()
-        for path in sorted(self.project_root.glob("*.docx.manifest.md")):
+        manifest_paths = sorted(self.project_root.glob("*.docx.manifest.md"))
+        if not manifest_paths:
+            raise FileNotFoundError(
+                "Submission candidate requires at least one DOCX export manifest, "
+                "such as generic-chemistry-draft.docx.manifest.md (*.docx.manifest.md)."
+            )
+        for path in manifest_paths:
             manifest_text = path.read_text(encoding="utf-8")
             metadata, _ = _split_frontmatter(manifest_text)
             if metadata.get("kind") != "docx-export-manifest":
@@ -460,6 +435,12 @@ class ReviewRunner:
         unit_paths = tuple(sorted((self.project_root / "units").glob("*.md")))
         if not unit_paths:
             raise FileNotFoundError("Submission candidate requires at least one saved unit asset.")
+        for path in unit_paths:
+            metadata, _ = _split_frontmatter(path.read_text(encoding="utf-8"))
+            if metadata.get("kind") != "research-writing-unit":
+                raise ValueError(
+                    f"{path.name} has the wrong asset kind; expected research-writing-unit."
+                )
         assets.extend(str(path.relative_to(self.project_root)) for path in unit_paths)
         if journal is not None:
             guide_path = self.project_root / "journal-guide.md"
@@ -481,6 +462,29 @@ class ReviewRunner:
             if hashlib.sha256(guide_content.encode("utf-8")).hexdigest() != journal.guide.content_digest:
                 raise ValueError("journal-guide.md content digest does not match the supplied guide.")
             assets.append("journal-guide.md")
+            profile_path = self.project_root / "journal-profile.md"
+            if not profile_path.exists():
+                raise FileNotFoundError("Journal adaptation requires journal-profile.md.")
+            profile_text = profile_path.read_text(encoding="utf-8")
+            profile_metadata, _ = _split_frontmatter(profile_text)
+            profile_target = _section_value(profile_text, "Target journal").strip()
+            profile_locator = _section_value(profile_text, "Official guide").strip()
+            profile_digest = _section_value(profile_text, "Guide digest").strip()
+            if (
+                profile_metadata.get("kind") != "journal-profile"
+                or profile_metadata.get("status") != "SELECTED"
+                or profile_metadata.get("target_journal", "").strip()
+                != journal.target_journal.strip()
+                or profile_target != journal.target_journal.strip()
+                or profile_locator != journal.guide.source_locator.strip()
+                or profile_digest != journal.guide.content_digest
+                or profile_metadata.get("guide_digest", "").strip()
+                != journal.guide.content_digest
+            ):
+                raise ValueError(
+                    "journal-profile.md does not match the supplied JournalAdaptation."
+                )
+            assets.append("journal-profile.md")
         return tuple(assets)
 
     def _validate_inputs(
@@ -696,7 +700,7 @@ def _parse_content_blocks(content: str) -> tuple[_ContentBlock, ...]:
     section = _section_value(content, "Content blocks")
     blocks: list[_ContentBlock] = []
     pattern = re.compile(
-        r"^### Merge .*?\n(.*?)(?=^### Merge .*?\n|\Z)",
+        r"^### (?P<claim_id>Merge .*?)\n(?P<body>.*?)(?=^### Merge .*?\n|\Z)",
         flags=re.MULTILINE | re.DOTALL,
     )
     matches = tuple(pattern.finditer(section))
@@ -705,11 +709,12 @@ def _parse_content_blocks(content: str) -> tuple[_ContentBlock, ...]:
             "review-content.md contains content outside structured merge blocks."
         )
     for match in matches:
-        raw = match.group(1)
+        raw = match.group("body")
         text_match = re.search(r"^Text:\n(.*)\Z", raw, flags=re.MULTILINE | re.DOTALL)
         if not text_match:
             raise ValueError("review-content.md contains a malformed content block.")
         block = _ContentBlock(
+            claim_id=match.group("claim_id").strip(),
             section=_field(raw, "Section"),
             claim_level=_field(raw, "Claim level"),
             contribution_type=_field(raw, "Contribution type"),
@@ -770,6 +775,7 @@ def _source_digest(blocks: tuple[_ContentBlock, ...], content_revision: int) -> 
     for block in blocks:
         values.extend(
             (
+                block.claim_id,
                 block.section,
                 block.claim_level,
                 block.contribution_type,
@@ -869,19 +875,21 @@ def _source_registry_bindings(text: str) -> tuple[dict[str, str], ...]:
         identity_index = headers.index("Identity")
     except ValueError:
         return ()
+    media_ids_index = headers.index("Media IDs") if "Media IDs" in headers else None
     values: list[dict[str, str]] = []
     for line in lines:
         if not line.startswith("|") or line == header_line:
             continue
-        if set(line.replace("|", "").strip()) <= {"-"}:
-            continue
         cells = tuple(part.strip() for part in line.strip("|").split("|"))
         if len(cells) != len(headers):
+            continue
+        if all(cell and set(cell) <= {"-"} for cell in cells):
             continue
         values.append(
             {
                 "source_id": cells[source_id_index],
                 "identity": cells[identity_index],
+                "media_ids": cells[media_ids_index] if media_ids_index is not None else "",
             }
         )
     return tuple(values)

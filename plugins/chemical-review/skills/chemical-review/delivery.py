@@ -706,6 +706,7 @@ class GenericChemistryDocxExporter:
 
         inventory = FigureInventory.load(self.project_root)
         figures = inventory.validate_for_delivery()
+        _validate_figure_content_bindings(blocks, figures)
         document = self._build_document(blocks, figures, profile)
         qa = _export_qa(blocks, figures, profile)
         payload = _deterministic_docx(document)
@@ -839,8 +840,9 @@ class GenericChemistryDocxExporter:
                     path = Path(asset.source_path)
                     if not path.is_absolute():
                         path = self.project_root / path
+                    picture_width = _picture_width_inches(path, asset.bbox)
                     picture = _cropped_picture(path, asset.bbox)
-                    document.add_picture(picture, width=Inches(5.5))
+                    document.add_picture(picture, width=Inches(picture_width))
                 caption = document.add_paragraph(f"{asset.asset_id}. {asset.caption}")
                 if caption.runs:
                     caption.runs[0].italic = True
@@ -892,11 +894,14 @@ def _export_qa(blocks, assets: tuple[FigureAsset, ...], profile: JournalProfile)
         if profile.adaptation_status == "MET"
         else "PARTIAL_GAP"
     )
-    return {
-        "status": "MET"
+    export_status = (
+        "MANUAL_REVIEW_REQUIRED"
         if image_resolution_status == "MET"
         and journal_mapping in {"NOT_APPLICABLE", "MAPPED_FROM_GUIDE"}
-        else "GAP",
+        else "GAP"
+    )
+    return {
+        "status": export_status,
         "asset_count": len(assets),
         "heading_count": 1 + len(sections) + bool(references) + (profile.status == "SELECTED"),
         "reference_count": len(references),
@@ -908,9 +913,46 @@ def _export_qa(blocks, assets: tuple[FigureAsset, ...], profile: JournalProfile)
             len(re.findall(r"(?im)^\s*(?:Equation|Eq\.?):", block.text)) for block in blocks
         ),
         "image_resolution_status": image_resolution_status,
-        "layout_status": "MET",
+        "layout_status": "MANUAL_REVIEW_REQUIRED",
         "journal_format_mapping": journal_mapping,
     }
+
+
+def _validate_figure_content_bindings(blocks, assets: tuple[FigureAsset, ...]) -> None:
+    """Bind each selected asset to one exact canonical paragraph and claim."""
+
+    by_section: dict[str, list[object]] = {}
+    for block in blocks:
+        by_section.setdefault(block.section, []).append(block)
+    for asset in assets:
+        section_blocks = by_section.get(asset.target_section, [])
+        if not section_blocks:
+            raise ValueError(
+                f"Figure {asset.asset_id} targets an absent content section."
+            )
+        paragraph_match = re.fullmatch(r"P-([1-9]\d*)", asset.target_paragraph)
+        paragraph_index = int(paragraph_match.group(1)) if paragraph_match else 0
+        if paragraph_index < 1 or paragraph_index > len(section_blocks):
+            raise ValueError(
+                f"Figure {asset.asset_id} targets an absent content paragraph."
+            )
+        target_block = section_blocks[paragraph_index - 1]
+        if target_block.claim_id not in asset.claim_ids:
+            raise ValueError(
+                f"Figure {asset.asset_id} claim ID does not match its target paragraph."
+            )
+        paragraph_evidence_keys = {
+            key
+            for evidence_id in target_block.evidence_ids
+            for key in _identity_keys(evidence_id)
+        }
+        if not any(
+            _identity_keys(citation) & paragraph_evidence_keys
+            for citation in asset.citation_ids
+        ):
+            raise ValueError(
+                f"Figure {asset.asset_id} citation is absent from its target paragraph evidence."
+            )
 
 
 def _render_figure_asset(asset: FigureAsset) -> str:
@@ -1250,6 +1292,26 @@ def _cropped_picture(path: Path, bbox: tuple[int, int, int, int] | str):
         cropped.save(stream, format="PNG")
     stream.seek(0)
     return stream
+
+
+def _picture_width_inches(
+    path: Path,
+    bbox: tuple[int, int, int, int] | str,
+    *,
+    max_width: float = 5.5,
+    max_height: float = 5.0,
+) -> float:
+    if Image is None:
+        return max_width
+    values = _bbox_values(bbox)
+    with Image.open(path) as source:
+        pixel_width, pixel_height = source.width, source.height
+    if values is not None:
+        left, top, right, bottom = values
+        pixel_width, pixel_height = right - left, bottom - top
+    if pixel_width <= 0 or pixel_height <= 0:
+        return max_width
+    return min(max_width, max_height * pixel_width / pixel_height)
 
 
 def _bbox_values(value: tuple[int, int, int, int] | str) -> tuple[int, int, int, int] | None:

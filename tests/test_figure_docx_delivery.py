@@ -138,7 +138,7 @@ class FigureDocxDeliveryTests(unittest.TestCase):
                     table_rows=(("Entry", "Yield"), ("A", "84%")),
                     target_section="Results",
                     target_paragraph="P-1",
-                    claim_ids=("claim-1",),
+                    claim_ids=("Merge 1 · Block",),
                     citation_ids=("paper-1",),
                     extraction_status="VERIFIED",
                 )
@@ -172,8 +172,64 @@ class FigureDocxDeliveryTests(unittest.TestCase):
             manifest = exported.manifest_path.read_text(encoding="utf-8")
             self.assertIn("table_count: 1", manifest)
             self.assertIn("reference_count: 1", manifest)
-            self.assertIn("layout_status: MET", manifest)
+            self.assertIn("layout_status: MANUAL_REVIEW_REQUIRED", manifest)
             self.assertIn("## Export QA", manifest)
+
+    def test_docx_rejects_figure_claim_id_from_a_different_content_block(self):
+        with TemporaryDirectory() as project_dir:
+            root = Path(project_dir)
+            inventory = FigureInventory(root)
+            inventory.register_source_asset(
+                FigureAsset(
+                    asset_id="table-1",
+                    asset_type="TABLE",
+                    source_id="paper-1",
+                    source_path="",
+                    locator="p. 7, Table 2",
+                    caption="Reported conditions.",
+                    provenance="Transcribed from the cited paper.",
+                    table_rows=(("Entry", "Yield"), ("A", "84%")),
+                    target_section="Results",
+                    target_paragraph="P-1",
+                    claim_ids=("Merge 1 · Block 2",),
+                    citation_ids=("paper-1",),
+                    extraction_status="VERIFIED",
+                )
+            )
+            inventory.persist()
+            self._write_source_registry(root, "paper-1")
+            self._write_two_block_content(root)
+
+            with self.assertRaisesRegex(ValueError, "claim ID.*target paragraph"):
+                GenericChemistryDocxExporter(root).export()
+
+    def test_docx_rejects_citation_found_elsewhere_but_not_in_target_paragraph(self):
+        with TemporaryDirectory() as project_dir:
+            root = Path(project_dir)
+            inventory = FigureInventory(root)
+            inventory.register_source_asset(
+                FigureAsset(
+                    asset_id="table-1",
+                    asset_type="TABLE",
+                    source_id="paper-1",
+                    source_path="",
+                    locator="p. 7, Table 2",
+                    caption="Reported conditions.",
+                    provenance="Transcribed from the cited paper.",
+                    table_rows=(("Entry", "Yield"), ("A", "84%")),
+                    target_section="Results",
+                    target_paragraph="P-2",
+                    claim_ids=("Merge 1 · Block 2",),
+                    citation_ids=("paper-1",),
+                    extraction_status="VERIFIED",
+                )
+            )
+            inventory.persist()
+            self._write_source_registry(root, "paper-1")
+            self._write_two_block_content(root)
+
+            with self.assertRaisesRegex(ValueError, "citation.*target paragraph"):
+                GenericChemistryDocxExporter(root).export()
 
     def test_orchestrator_exposes_the_delivery_seam(self):
         with TemporaryDirectory() as project_dir:
@@ -327,7 +383,7 @@ class FigureDocxDeliveryTests(unittest.TestCase):
         with TemporaryDirectory() as project_dir:
             root = Path(project_dir)
             image_path = root / "source-figure.png"
-            Image.new("RGB", (100, 60), "white").save(image_path)
+            Image.new("RGB", (100, 160), "white").save(image_path)
             inventory = FigureInventory(root)
             inventory.register_source_figure(
                 FigureAsset(
@@ -339,7 +395,7 @@ class FigureDocxDeliveryTests(unittest.TestCase):
                     provenance="Original source figure.",
                     target_section="Mechanistic comparison",
                     target_paragraph="P-1",
-                    claim_ids=("claim-1",),
+                    claim_ids=("Merge 1 · Block",),
                     citation_ids=("paper-1",),
                     extraction_status="VERIFIED",
                 )
@@ -377,6 +433,36 @@ class FigureDocxDeliveryTests(unittest.TestCase):
             self.assertIn("The source figure supports the comparison.", text)
             self.assertIn("Mechanistic source figure.", text)
             self.assertEqual(len(document.inline_shapes), 1)
+            self.assertLessEqual(document.inline_shapes[0].height.inches, 5.0)
+
+    @staticmethod
+    def _write_two_block_content(root):
+        root.joinpath("review-content.md").write_text(
+            _document(
+                {
+                    "kind": "single-review-content-source",
+                    "schema": "1",
+                    "content_revision": "1",
+                },
+                "# Review Content Source\n\n"
+                "## Content blocks\n\n"
+                "### Merge 1 · Block 1\n"
+                "Section: Results\n"
+                "Claim level: SOURCE_FACT\n"
+                "Contribution type: comparison\n"
+                "Source units: unit-1\n"
+                "Evidence IDs: paper-1\n"
+                "Text:\nPaper one result.\n\n"
+                "### Merge 1 · Block 2\n"
+                "Section: Results\n"
+                "Claim level: SOURCE_FACT\n"
+                "Contribution type: comparison\n"
+                "Source units: unit-2\n"
+                "Evidence IDs: paper-2\n"
+                "Text:\nPaper two result.\n",
+            ),
+            encoding="utf-8",
+        )
 
     def test_docx_digest_conflict_preserves_edit_and_pauses(self):
         with TemporaryDirectory() as project_dir:

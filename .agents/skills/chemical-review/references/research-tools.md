@@ -17,13 +17,14 @@
 | [MinerU](https://opendatalab.github.io/MinerU/) | 将 PDF 等文档解析为结构化内容，尽量保留版面、表格、公式、图片和文本，供后续阅读与定位。 | 解析器不是来源；解析错误不能被当成论文事实，图表/公式需回看 PDF。 | GROBID、Docling、纯文本/OCR、人工阅读原 PDF。 |
 | [GROBID](https://grobid.readthedocs.io/en/latest/) | 基于机器学习的科学文献结构化解析，尤其是 TEI/XML、标题、作者、正文和参考文献。 | 不保证复杂版面、化学结构、表格和公式无误；不负责科学解释。 | MinerU、Docling、PDF 原文与人工定位。 |
 | [Docling](https://docling-project.github.io/docling/) | 文档转换与结构化表示，支持 PDF 等多种格式，适合作为通用解析后端。 | 转换结果仍是中间产物，不是事实验证或引用裁决。 | MinerU、GROBID、OCR、人工复核。 |
+| [pdftotext](https://poppler.freedesktop.org/) | 在本机把用户授权 PDF 转为逐页文本，作为无需 key 和上传的 page-locator fallback。 | 不可靠识别双栏阅读顺序、化学结构、Scheme、Table、公式或图片；不能冒充 chemistry-aware parse。 | MinerU、GROBID、Docling、原始 PDF 人工复核。 |
 
 ## 推荐路线与降级原则
 
 1. 先用 OpenAlex + Semantic Scholar + Crossref 扩展和去重题录；以 DOI/出版社记录作为身份核对锚点。
 2. 用 PubChem + ChEBI 做化学实体与术语辅助核对；定义、结构、性质和实验事实必须分开处理。
 3. 用 Unpaywall，再用 Europe PMC/CORE 和出版社或机构仓储寻找合法全文；没有全文时保留为待补证据，不用摘要补写实验细节。
-4. 解析优先 MinerU；按文献类型和失败表现切换 GROBID 或 Docling。任何解析器输出都要保留 PDF 页码/章节定位，并对表格、公式、结构图和 SI 做人工复核。
+4. 解析优先 MinerU；按文献类型和失败表现切换 GROBID 或 Docling。只有本地 `pdftotext` 可用时，允许生成逐页文本与 page locator，但必须保留低保真降级说明。任何解析器输出都要保留 PDF 页码/章节定位，并对表格、公式、结构图和 SI 做人工复核。
 5. 全部外部服务不可用时仍可用用户提供的 DOI、题录和 PDF 完成受限 Research；结果标注覆盖边界，允许后续迭代补检索。
 
 ## 当前内置路线
@@ -31,7 +32,9 @@
 仓库当前内置 `research.OpenAlexDiscoveryAdapter`，默认由 orchestrator 的
 `run_research()` 通过 `ResearchConfig.default()` 启用，用于真实的 OpenAlex Works 搜索。
 它只负责发现和元数据整理，不把摘要或排名当作化学事实；HTTP、JSON、限流和不可用情况会
-进入 Research 的工具降级记录。其余发现、实体、全文和解析能力仍通过可替换 adapter 注入。
+进入 Research 的工具降级记录。`research.LocalPdftotextParserAdapter` 在 executable 可用时由
+`ResearchConfig.no_key_fallback()` 自动接入，仅处理用户明确授权的本地 PDF，并输出逐页 locator
+和低保真说明。其余发现、实体、全文和解析能力仍通过可替换 adapter 注入。
 
 可选环境配置为 `OPENALEX_API_KEY` 和 `OPENALEX_MAILTO`。配置值只用于请求，不写入 Markdown
 资产、错误消息或日志；没有配置时仍尝试公开端点，失败则保留 `HUMAN_ACTION_REQUIRED`/降级路线。

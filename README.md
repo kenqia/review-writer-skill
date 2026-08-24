@@ -85,7 +85,9 @@ Review 最终从同一 `review-content.md` 生成：
 
 Research 默认只有真实的 OpenAlex discovery adapter；其他路线通过可替换 adapter 注入。推荐
 路线是 OpenAlex/Semantic Scholar/Crossref → PubChem/ChEBI → Unpaywall/Europe PMC/CORE →
-MinerU/GROBID/Docling。缺少 API、配额受限或全文受限时，流程必须保留降级信息，必要时请求
+MinerU/GROBID/Docling。若本机检测到 `pdftotext`，no-key fallback 会把用户授权 PDF 解析为带
+page locator 的本地文本块；这是低保真恢复路线，不宣称识别复杂化学版面、Scheme 或 Table。缺少
+API、配额受限或全文受限时，流程必须保留降级信息，必要时请求
 用户提供 DOI、题录、合法全文或授权 PDF；摘要、排名、解析器输出和模型推断都不能伪装成文献事实。
 
 Research 的 `DISCOVERY_READY → EVIDENCE_READY → CLAIM_READY` 是资格门，不是论文数量评分。项目可

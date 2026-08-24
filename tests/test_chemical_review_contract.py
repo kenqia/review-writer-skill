@@ -465,6 +465,31 @@ class ChemicalReviewContractTests(unittest.TestCase):
             handed_off = orchestrator.accept_research_handoff()
             self.assertEqual(handed_off.phase, "PRD")
 
+    def test_optional_pdftotext_gap_does_not_degrade_explicit_parser_route(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._research_ready_project(project_dir)
+            paper = PaperRecord("explicit-parser", "Explicit parser route")
+            result = orchestrator.run_research(
+                ResearchConfig(
+                    discovery=(
+                        FakeDiscovery("Crossref", [paper]),
+                        FakeDiscovery("Semantic Scholar", [paper]),
+                        FakeDiscovery("OpenAlex", [paper]),
+                    ),
+                    entities=(FakeEntity("PubChem", ["nickel"]), FakeEntity("ChEBI", ["complex"])),
+                    full_text=(
+                        FakeFullText("CORE", "full text"),
+                        FakeFullText("Europe PMC", "full text"),
+                        FakeFullText("Unpaywall", "full text"),
+                    ),
+                    parsers=(FakeParser("MinerU"), FakeParser("GROBID"), FakeParser("Docling")),
+                )
+            )
+
+            evidence = Path(project_dir, "research-evidence.md").read_text(encoding="utf-8")
+            self.assertNotIn("PDF parsing / pdftotext: not configured", evidence)
+            self.assertEqual(result.assets["research_handoff"], "PRD")
+
     def test_research_adapts_queries_and_classifies_unlayered_candidates(self):
         with TemporaryDirectory() as project_dir:
             orchestrator = self._research_ready_project(project_dir)

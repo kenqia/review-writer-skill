@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 from tempfile import TemporaryDirectory
 import unittest
@@ -225,6 +226,8 @@ class ProductUseAcceptanceTests(unittest.TestCase):
             )
             self.assertEqual(merged.assets["readiness"], "CLAIM_READY")
             self.assertTrue((root / "review-content.md").is_file())
+            content = (root / "review-content.md").read_text(encoding="utf-8")
+            claim_id = re.search(r"^### (Merge .+)$", content, flags=re.MULTILINE).group(1)
 
             image_path = root / "paper-1-figure.png"
             Image.new("RGB", (120, 80), "white").save(image_path)
@@ -239,7 +242,7 @@ class ProductUseAcceptanceTests(unittest.TestCase):
                     provenance="Cropped from the authorized source paper.",
                     target_section="Mechanistic comparison",
                     target_paragraph="P-1",
-                    claim_ids=("mechanism-claim",),
+                    claim_ids=(claim_id,),
                     citation_ids=("paper-1",),
                     extraction_status="VERIFIED",
                 )
@@ -276,6 +279,7 @@ class ProductUseAcceptanceTests(unittest.TestCase):
             ledger = json.loads((root / "run-budget.json").read_text(encoding="utf-8"))
             self.assertGreaterEqual(ledger["query_count"], 1)
             self.assertGreaterEqual(ledger["parser_pages"], 1)
+            self.assertGreaterEqual(ledger["parser_chunks"], 1)
             self.assertIn("EVIDENCE_READY", literature)
             self.assertIn("CLAIM_READY", merged.assets["readiness"])
 

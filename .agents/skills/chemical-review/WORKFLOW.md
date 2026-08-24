@@ -79,7 +79,10 @@ no-key 发现；`EVIDENCE_READY` 还要求合法全文、访问依据和页码/�
 3. 记录工具路线、成功能力、替换路线和失败恢复动作；合法全文只接受 `OPEN_ACCESS`、`USER_AUTHORIZED` 或 `INSTITUTION_AUTHORIZED` 的明确访问依据与来源 locator，解析结果还必须含页码或章节 locator。完成标准：`Tool route` 和 `Tool degradation or HUMAN_ACTION_REQUIRED` 均有内容，或明确记录 `None recorded.`。
 4. 给出 Research 交接判断，列出已覆盖方向、高影响未覆盖区域和主要不确定性；不以固定论文数量作为停止条件。完成标准：`Research handoff` 明确提议 `PROTOTYPE`/`PRD`，或说明为何仍 `WAITING_FOR_HUMAN`。
 
-首选解析路线是 MinerU，GROBID 补充结构/参考文献，Docling 作为 fallback；解析器输出只能作为后续阅读线索，不能替代原始 PDF 或人工科学判断。
+首选解析路线是 MinerU，GROBID 补充结构/参考文献，Docling 作为 fallback；检测到本机
+`pdftotext` 时，no-key fallback 可把用户授权 PDF 转为带 page locator 的低保真文本块。该本地路线
+不上传 PDF，也不声称识别复杂化学版面、Scheme 或 Table。所有解析器输出只能作为后续阅读线索，
+不能替代原始 PDF 或人工科学判断。
 
 Research 结束时必须写入 `coverage-matrix.md`、`run-budget.json`、`run-ledger.md`、
 `source-registry.md` 和可执行的 `research-setup-wizard.md`。wizard 只告诉用户如何配置推荐路线，
@@ -124,8 +127,8 @@ Review 接受 agent 对化学推理、意图对齐、修订请求、普通不确
 3. 多层 Review 分别检查综合价值、化学推理、科学诚信、意图对齐、目标期刊适配和双视图同步。Review agent 必须显式给出 `VALUE_PRODUCING` 或 `SUMMARY_ONLY` 及其理由；comparison、explanation、rebuttal、trend、hypothesis 和 new research question 等 contribution 标签只是审查语境，不能自动证明正文超越摘要复述。`SUMMARY_ONLY` 触发可执行修订，不代表模型观点必然正确或错误。
 4. 默认 hard stop 只限四类：`FABRICATED_OR_UNFINDABLE_SOURCE`、`MISQUOTED_SOURCE_DATA`、`INVENTED_CHEMICAL_FACT`、`INFERENCE_AS_SOURCE_FACT`。每个 hard stop 必须给出正文与来源 locator；普通分歧、证据空白和不确定性记录为 `NON_BLOCKING` 提示。
 5. 目标期刊要求必须保留当前官方作者指南快照、来源 locator 和内容 digest，并按 `MET`、`GAP` 或 `NOT_APPLICABLE` 记录。没有特定期刊但已确认目标读者时，期刊适配为 `NOT_APPLICABLE`。期刊 gap 可使候选包进入 `REVISION_REQUIRED`，但任何状态都不是接收预测。
-6. Review 同时生成 `review-report.md` 与 `submission-candidate-package.md`。候选包生成前必须验证 Research、PRD、unit-plan、unit 资产和单一内容源均存在且 frontmatter kind 正确；候选包状态只允许 `INTEGRITY_HOLD`、`REVISION_REQUIRED` 或 `SUBMISSION_CANDIDATE`；即使是 `SUBMISSION_CANDIDATE`，也只表示可交给人类科学编辑继续核验，不声明科学有效性或期刊接收。
-   若项目已有 `source-registry.md`、`coverage-matrix.md`、`figure-inventory.md` 或 `*.docx.manifest.md`，候选包会把它们列为交付证据，使来源绑定、覆盖缺口、图表 provenance 和排版 QA 可追溯；它们仍是证据附件，不会成为正文第二权威。
+6. Review 同时生成 `review-report.md` 与 `submission-candidate-package.md`。候选包生成前必须验证 Research、PRD、unit-plan、unit 资产、单一内容源、`source-registry.md`、`coverage-matrix.md` 和 `figure-inventory.md` 均存在且 frontmatter kind 正确，并且至少有一个 `*.docx.manifest.md` 与 DOCX 输出保持 digest 一致；候选包状态只允许 `INTEGRITY_HOLD`、`REVISION_REQUIRED` 或 `SUBMISSION_CANDIDATE`；即使是 `SUBMISSION_CANDIDATE`，也只表示可交给人类科学编辑继续核验，不声明科学有效性或期刊接收。
+   选定期刊时，`journal-guide.md` 与 `journal-profile.md` 也必须存在；profile 必须是 `SELECTED`，并保留与当前 JournalAdaptation 一致的 target journal、official guide locator 和 guide digest。上述资产是候选包的交付证据，不会成为正文第二权威。
 
 ## Intent confirmation
 

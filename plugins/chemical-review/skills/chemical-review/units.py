@@ -416,11 +416,7 @@ class UnitManager:
             all_units_merged=all(value == "MERGED" for value in statuses.values()),
             content_revision=revision,
             human_edit_detected=human_edit_detected,
-            readiness=(
-                "CLAIM_READY"
-                if merged_blocks and all(_claim_is_ready(claim) for _, claim in merged_blocks)
-                else self._best_preclaim_readiness(merged_blocks)
-            ),
+            readiness=self._current_readiness(),
             content_digest=self._content_digest(),
         )
 
@@ -614,18 +610,20 @@ class UnitManager:
         content = _set_section(content, "Content blocks", merged_content)
         content = _set_section(content, "Merge history", history)
         content = _set_section(content, "Preserved human edits and conflicts", preserved)
+        accumulated_claims = _parse_merged_claims(merged_content)
+        accumulated_blocks = tuple(((), claim) for claim in accumulated_claims)
         merged_readiness = (
             "CLAIM_READY"
-            if blocks and all(_claim_is_ready(claim) for _, claim in blocks)
-            else self._best_preclaim_readiness(blocks)
+            if accumulated_claims and all(_claim_is_ready(claim) for claim in accumulated_claims)
+            else self._best_preclaim_readiness(accumulated_blocks)
         )
         content = _replace_frontmatter(
             content,
-                {
-                    "content_revision": str(revision),
-                    "status": "ACTIVE",
-                    "readiness": merged_readiness if blocks else current_readiness,
-                    "generated_content_blocks_sha256": _content_hash(merged_content),
+            {
+                "content_revision": str(revision),
+                "status": "ACTIVE",
+                "readiness": merged_readiness if blocks else current_readiness,
+                "generated_content_blocks_sha256": _content_hash(merged_content),
                 "generated_merge_history_sha256": _content_hash(history),
                 "updated": self.today.isoformat(),
             },
@@ -1060,6 +1058,40 @@ def _render_content_blocks(
         f"Text:\n{claim.text.strip()}"
         for index, (source_units, claim) in enumerate(blocks, start=1)
     ) or "No content blocks added in this merge."
+
+
+def _parse_merged_claims(content_blocks: str) -> tuple[ClaimBlock, ...]:
+    pattern = re.compile(
+        r"^### Merge .*?\n(.*?)(?=^### Merge .*?\n|\Z)",
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    matches = tuple(pattern.finditer(content_blocks))
+    if pattern.sub("", content_blocks).strip():
+        raise ValueError("review-content.md contains content outside structured merge blocks.")
+    claims: list[ClaimBlock] = []
+    for match in matches:
+        raw = match.group(1)
+        text_match = re.search(r"^Text:\n(.*)\Z", raw, flags=re.MULTILINE | re.DOTALL)
+        if not text_match:
+            raise ValueError("review-content.md contains a malformed content block.")
+        claims.append(
+            ClaimBlock(
+                section=_field(raw, "Section"),
+                claim_level=_field(raw, "Claim level"),
+                contribution_type=_field(raw, "Contribution type"),
+                text=text_match.group(1).strip(),
+                evidence_ids=tuple(
+                    item.strip()
+                    for item in _field(raw, "Evidence IDs").split(",")
+                    if item.strip() and item.strip() != "NONE"
+                ),
+                comparability_status=(
+                    _field(raw, "Comparability status") or "NOT_APPLICABLE"
+                ),
+                comparability_basis=_field(raw, "Comparability basis"),
+            )
+        )
+    return tuple(claims)
 
 
 def _field(block: str, label: str) -> str:

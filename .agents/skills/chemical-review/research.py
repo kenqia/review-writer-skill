@@ -341,6 +341,8 @@ class ResearchConfig:
 
         kwargs["allow_no_key_fallback"] = True
         kwargs.setdefault("discovery", ())
+        if "parsers" not in kwargs and shutil.which("pdftotext"):
+            kwargs["parsers"] = (LocalPdftotextParserAdapter(),)
         return cls(**kwargs)  # type: ignore[arg-type]
 
 
@@ -396,6 +398,43 @@ class _LocalPdfFullTextAdapter:
         )
 
 
+class LocalPdftotextParserAdapter:
+    """Structure local pdftotext output into conservative page-bound chunks."""
+
+    name = "pdftotext"
+    cloud = False
+
+    def parse(self, full_text: FullTextResult) -> ParsedDocument:
+        if full_text.status != "FOUND" or not full_text.text.strip():
+            raise CapabilityUnavailable("pdftotext parse failed")
+        pages = tuple(
+            page.strip()
+            for page in full_text.text.replace("\r\n", "\n").split("\f")
+            if page.strip()
+        )
+        if not pages:
+            raise CapabilityUnavailable("pdftotext parse failed")
+        source_name = (
+            Path(full_text.local_path).name
+            if full_text.local_path
+            else full_text.locator.partition("#")[0]
+            or full_text.paper_id
+        )
+        return ParsedDocument(
+            paper_id=full_text.paper_id,
+            parser=self.name,
+            sections=pages,
+            locators=tuple(
+                f"{source_name}#page={page_number}"
+                for page_number in range(1, len(pages) + 1)
+            ),
+            note=(
+                "Local pdftotext fallback; page chunks retain checkable locators but do not "
+                "claim chemistry-aware layout, table, or figure parsing."
+            ),
+        )
+
+
 @dataclass(frozen=True)
 class ResearchRunResult:
     status: str
@@ -442,7 +481,11 @@ DEFAULT_ROUTES = (
     ("PDF parsing", "MinerU", "preferred PDF-to-structured-text route"),
     ("PDF parsing", "GROBID", "structure and reference extraction supplement"),
     ("PDF parsing", "Docling", "fallback or comparison parser"),
+    ("PDF parsing", "pdftotext", "local page-text fallback without chemistry-aware layout"),
 )
+# ``pdftotext`` is an optional local fallback. It is selected explicitly by
+# ``ResearchConfig.no_key_fallback()`` when detected, but its absence must not
+# degrade a run that already selected a chemistry-aware parser route.
 PREFERRED_PARSERS = ("MinerU", "GROBID", "Docling")
 PREFERRED_DISCOVERY = ("OpenAlex", "Semantic Scholar", "Crossref")
 PREFERRED_ENTITIES = ("PubChem", "ChEBI")
@@ -539,6 +582,7 @@ class ResearchRunner:
                 "retries",
                 "cache_hits",
                 "parser_pages",
+                "parser_chunks",
             )
         }
         history = ledger.setdefault("run_history", [])
@@ -552,6 +596,7 @@ class ResearchRunner:
             "retries",
             "cache_hits",
             "parser_pages",
+            "parser_chunks",
         ):
             ledger[key] = 0
         # This runner is deliberately sequential; record observed concurrency,
@@ -1874,6 +1919,7 @@ class ResearchRunner:
                                 "parser returned no page/section locators for the parsed document"
                             )
                         _ledger_increment(ledger, "parser_pages", cached_pages)
+                        _ledger_increment(ledger, "parser_chunks", len(document.sections))
                         _ledger_increment(ledger, "input_tokens", cached_input_tokens)
                         _ledger_event(
                             ledger,
@@ -1936,6 +1982,7 @@ class ResearchRunner:
                     parsed.append(document)
                     _cache_put(cache, "parsed", cache_key, _parsed_to_cache(document))
                     _ledger_increment(ledger, "parser_pages", max(1, len(document.locators)))
+                    _ledger_increment(ledger, "parser_chunks", len(document.sections))
                     _ledger_increment(
                         ledger,
                         "input_tokens",
@@ -2279,6 +2326,7 @@ class ResearchRunner:
             "retries",
             "cache_hits",
             "parser_pages",
+            "parser_chunks",
             "runs_started",
             "last_run_id",
         ):
@@ -2477,6 +2525,7 @@ def _empty_ledger() -> dict[str, object]:
         "retries": 0,
         "cache_hits": 0,
         "parser_pages": 0,
+        "parser_chunks": 0,
         "runs_started": 0,
         "last_run_id": "",
         "budget": {},

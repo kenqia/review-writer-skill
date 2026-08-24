@@ -150,6 +150,35 @@ class P0ContractTests(unittest.TestCase):
             merged = orchestrator.merge_review_units(("cross-study",))
             self.assertEqual(merged.assets["readiness"], "EVIDENCE_READY")
 
+    def test_later_single_source_merge_cannot_hide_an_existing_comparability_gap(self):
+        with TemporaryDirectory() as project_dir:
+            orchestrator = self._implementation_project(
+                project_dir,
+                units=(self._unit("cross-study"), self._unit("single-source")),
+            )
+            literature = Path(project_dir, "literature-set.md")
+            literature.write_text(
+                literature.read_text(encoding="utf-8")
+                + "\n## Extension\n- paper-2: Second evidence [readiness: EVIDENCE_READY]\n",
+                encoding="utf-8",
+            )
+            orchestrator.submit_review_unit_result(
+                self._result(
+                    "cross-study",
+                    claim_level="MODEL_SYNTHESIS",
+                    evidence_ids=("paper-1", "paper-2"),
+                )
+            )
+            orchestrator.submit_review_unit_result(self._result("single-source"))
+
+            first = orchestrator.merge_review_units(("cross-study",))
+            self.assertEqual(first.assets["readiness"], "EVIDENCE_READY")
+            final = orchestrator.merge_review_units(("single-source",))
+
+            self.assertEqual(final.assets["readiness"], "EVIDENCE_READY")
+            content = Path(project_dir, "review-content.md").read_text(encoding="utf-8")
+            self.assertIn("readiness: EVIDENCE_READY", content)
+
     def test_execution_mode_persists_and_continuous_batch_merges_once(self):
         with TemporaryDirectory() as project_dir:
             orchestrator = self._implementation_project(

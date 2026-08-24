@@ -930,18 +930,122 @@ class ChemicalReviewOrchestrator:
         local so the core orchestrator stays usable in keyless/minimal setups.
         """
 
-        from delivery import GenericChemistryDocxExporter, JournalProfile
+        from delivery import DocxExportError, GenericChemistryDocxExporter, JournalProfile
 
-        if profile is None:
-            profile_path = self.project_root / "journal-profile.md"
-            profile = (
-                JournalProfile.reconcile(self.project_root)
-                if profile_path.exists()
-                else JournalProfile.unselected()
+        target_journal = ""
+        if self.intent_path.exists():
+            target_journal = _target_journal_from_intent(
+                self.intent_path.read_text(encoding="utf-8")
             )
-        if profile.status == "SELECTED" and profile.adaptation_status == "GAP":
-            from delivery import DocxExportError
 
+        def hold_for_profile(error: DocxExportError) -> None:
+            if self.state_path.exists():
+                self._update_state(
+                    status="WAITING_FOR_HUMAN",
+                    next_action="HUMAN_ACTION_REQUIRED: " + str(error),
+                    human_action="REQUIRED",
+                    open_questions=str(error),
+                    resume_note=(
+                        "review-content.md remains canonical; restore a matching journal-profile.md "
+                        "before journal-specific DOCX export."
+                    ),
+                )
+            raise error
+
+        state_metadata: dict[str, str] = {}
+        if self.state_path.exists():
+            state_metadata, _ = _split_frontmatter(
+                self.state_path.read_text(encoding="utf-8")
+            )
+        state_journal_selected = (
+            state_metadata.get("journal_status") == "SELECTED"
+            and state_metadata.get("journal_confirmation") == "CONFIRMED"
+        )
+        if target_journal and not state_journal_selected:
+            hold_for_profile(
+                DocxExportError(
+                    "The intent target journal requires workflow state "
+                    "journal_status=SELECTED and journal_confirmation=CONFIRMED."
+                )
+            )
+        if not target_journal and state_journal_selected:
+            hold_for_profile(
+                DocxExportError(
+                    "The workflow state selects a target journal but review-intent.md has no target journal."
+                )
+            )
+
+        profile_path = self.project_root / "journal-profile.md"
+        if target_journal:
+            # A confirmed target journal makes the persisted profile the sole
+            # authority.  Never let a caller-supplied in-memory profile bypass
+            # a missing, malformed, stale, or mismatched saved profile.
+            if not profile_path.exists():
+                hold_for_profile(
+                    DocxExportError(
+                        "The confirmed target journal requires its persisted journal-profile.md before DOCX export."
+                    )
+                )
+            try:
+                persisted_profile = JournalProfile.reconcile(self.project_root)
+            except (OSError, TypeError, ValueError, KeyError) as error:
+                hold_for_profile(
+                    DocxExportError(
+                        "The persisted journal-profile.md could not be reconciled with the official guide: "
+                        f"{error}"
+                    )
+                )
+            if (
+                persisted_profile.status != "SELECTED"
+                or persisted_profile.target_journal.strip().casefold()
+                != target_journal.strip().casefold()
+            ):
+                hold_for_profile(
+                    DocxExportError(
+                        "The persisted journal profile does not match the confirmed target journal."
+                    )
+                )
+            if profile is not None:
+                try:
+                    profile.validate()
+                except (TypeError, ValueError) as error:
+                    hold_for_profile(
+                        DocxExportError(
+                            "The supplied DOCX journal profile is invalid and cannot override "
+                            f"the persisted journal-profile.md: {error}"
+                        )
+                    )
+                if (
+                    profile.target_journal.strip().casefold()
+                    != persisted_profile.target_journal.strip().casefold()
+                ):
+                    hold_for_profile(
+                        DocxExportError(
+                            "The supplied DOCX journal profile does not match the confirmed target journal."
+                        )
+                    )
+                if profile.guide_digest != persisted_profile.guide_digest:
+                    hold_for_profile(
+                        DocxExportError(
+                            "The supplied DOCX journal profile does not match the persisted journal-profile.md."
+                        )
+                    )
+            profile = persisted_profile
+        elif profile is None:
+            # Generic reader-facing delivery retains the existing behavior:
+            # use a saved profile when one is present, otherwise no journal
+            # adaptation is selected.
+            try:
+                profile = (
+                    JournalProfile.reconcile(self.project_root)
+                    if profile_path.exists()
+                    else JournalProfile.unselected()
+                )
+            except (OSError, TypeError, ValueError, KeyError) as error:
+                raise DocxExportError(
+                    f"The persisted journal-profile.md could not be read: {error}"
+                ) from error
+        if profile.status == "SELECTED" and profile.adaptation_status == "GAP":
             error = DocxExportError(
                 profile.recovery_action
                 or "Journal profile is stale or unavailable; refresh the official guide before exporting."
