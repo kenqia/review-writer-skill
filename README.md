@@ -110,10 +110,15 @@ generic chemistry DOCX 和 manifest；选定期刊后再由当前官方指南快
 本地验证：
 
 ```bash
+python -m pip install ruff==0.14.14 python-docx==1.2.0 Pillow==12.2.0
 python -m unittest discover -s tests -p 'test_*.py'
 ruff check --target-version py311 .agents/skills/chemical-review plugins/chemical-review/skills/chemical-review scripts tests
 python scripts/package_plugin.py
 ```
+
+其中 `python-docx` 和 `Pillow` 是 DOCX/图表交付测试及本地图片元数据路径的验证依赖；它们不是
+Chemical Review plugin 的强制运行时依赖。缺少时，运行时会保留 Markdown/no-key fallback，并明确报告
+无法生成 DOCX 或读取图片元数据。
 
 plugin manifest 也应使用 Codex plugin validator 检查；本机可运行：
 

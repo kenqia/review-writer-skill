@@ -22,7 +22,11 @@ jobs:
       - name: Install Codex CLI for plugin smoke
         run: npm install --global @openai/codex@0.149.0
       - name: Install verification tools
-        run: python -m pip install --disable-pip-version-check ruff==0.14.14
+        run: >-
+          python -m pip install --disable-pip-version-check
+          ruff==0.14.14
+          python-docx==1.2.0
+          Pillow==12.2.0
       - name: Verify canonical plugin projection
         run: python scripts/build_plugin.py --check
       - name: Validate plugin package
