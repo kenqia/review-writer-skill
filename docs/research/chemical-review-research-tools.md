@@ -1,7 +1,8 @@
 # Chemical-review Research 工具核对
 
-本说明的 canonical source 已移入可发布 skill：
+v2 的 canonical Research 接口与用户路线在以下文件中：
 
-[`../../.agents/skills/chemical-review/references/research-tools.md`](../../.agents/skills/chemical-review/references/research-tools.md)
+- [`../../.agents/skills/chemical-review-research/SKILL.md`](../../.agents/skills/chemical-review-research/SKILL.md)
+- [`../../.agents/skills/chemical-review-research/research.py`](../../.agents/skills/chemical-review-research/research.py)
 
-这样 project-scoped skill 与 Chemical Review plugin 使用同一份工具边界说明，避免发布包缺失或两份内容漂移。
+正式 adapters 为 OpenAlex、Semantic Scholar、Crossref、PubChem、ChEBI、Unpaywall、Europe PMC、CORE 与 MinerU。MinerU 是主解析器，`pdftotext` 是本地低保真 fallback；v1 的 GROBID/Docling 推荐列表已 superseded。

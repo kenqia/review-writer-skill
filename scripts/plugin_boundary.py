@@ -1,4 +1,4 @@
-"""Canonical file boundary for the Chemical Review plugin projection."""
+"""Fail-closed source and release boundary for Chemical Review v2."""
 
 from __future__ import annotations
 
@@ -7,24 +7,22 @@ import json
 from pathlib import Path
 
 
-# This is deliberately a list of runtime files, not an extension-based rule.
-# Adding a new runtime asset requires an explicit review of the release
-# boundary and a change here.
+V2_SKILL_NAMES = (
+    "chemical-review-intent",
+    "chemical-review-research",
+    "chemical-review-synthesis",
+    "chemical-review-qa",
+)
+V2_SKILL_FILES = {
+    "chemical-review-intent": frozenset({"SKILL.md", "agents/openai.yaml", "intent.py"}),
+    "chemical-review-research": frozenset({"SKILL.md", "agents/openai.yaml", "research.py"}),
+    "chemical-review-synthesis": frozenset({"SKILL.md", "agents/openai.yaml", "synthesis.py"}),
+    "chemical-review-qa": frozenset({"SKILL.md", "agents/openai.yaml", "qa.py"}),
+}
 RUNTIME_SKILL_FILES = frozenset(
-    {
-        "SKILL.md",
-        "WORKFLOW.md",
-        "ASSET-TEMPLATES.md",
-        "agents/openai.yaml",
-        "feedback.py",
-        "delivery.py",
-        "orchestrator.py",
-        "prototype.py",
-        "references/research-tools.md",
-        "research.py",
-        "review.py",
-        "units.py",
-    }
+    f"skills/{skill}/{relative}"
+    for skill, files in V2_SKILL_FILES.items()
+    for relative in files
 )
 PLUGIN_ROOT_FILES = frozenset({".codex-plugin/plugin.json", "LICENSE", "README.md"})
 
@@ -35,21 +33,13 @@ def _resolution_error(message: str) -> ValueError:
 
 @dataclass(frozen=True)
 class PluginSkillResolution:
-    """Non-sensitive identity for one resolved bundled skill."""
-
     plugin_id: str
     version: str
     skill_path: Path
+    skill_paths: tuple[Path, ...]
 
 
-def resolve_plugin_skill(plugin_root: Path) -> PluginSkillResolution:
-    """Resolve exactly the skill declared by one plugin manifest.
-
-    The package boundary must never guess a global fallback. A missing or
-    mismatched bundled skill is an installation error that callers surface to
-    the user before executing a different workflow.
-    """
-
+def resolve_plugin_skills(plugin_root: Path) -> PluginSkillResolution:
     root = plugin_root.resolve()
     manifest_path = root / ".codex-plugin" / "plugin.json"
     if not manifest_path.is_file():
@@ -61,35 +51,31 @@ def resolve_plugin_skill(plugin_root: Path) -> PluginSkillResolution:
     plugin_id = str(manifest.get("name", "")).strip()
     version = str(manifest.get("version", "")).strip()
     skills_value = str(manifest.get("skills", "")).strip()
-    if plugin_id != "chemical-review" or not version or not skills_value:
-        raise _resolution_error(
-            "plugin manifest does not identify the Chemical Review bundled skill"
-        )
+    if plugin_id != "chemical-review" or not version or skills_value != "./skills/":
+        raise _resolution_error("plugin manifest does not identify the Chemical Review v2 skill pack")
     skills_root = (root / skills_value).resolve()
     try:
         skills_root.relative_to(root)
     except ValueError as error:
         raise _resolution_error("plugin skills path escapes the plugin root") from error
-    skill_path = skills_root / plugin_id
-    skill_file = skill_path / "SKILL.md"
-    if not skill_file.is_file():
-        raise _resolution_error(
-            "Chemical Review bundled skill is missing; reinstall the plugin or choose the verified source"
-        )
-    skill_text = skill_file.read_text(encoding="utf-8")
-    if "name: chemical-review" not in skill_text:
-        raise _resolution_error(
-            "Chemical Review bundled skill identity does not match its manifest"
-        )
-    return PluginSkillResolution(
-        plugin_id=plugin_id,
-        version=version,
-        skill_path=skill_path,
-    )
+    paths: list[Path] = []
+    for skill_name in V2_SKILL_NAMES:
+        skill_path = skills_root / skill_name
+        skill_file = skill_path / "SKILL.md"
+        if not skill_file.is_file():
+            raise _resolution_error(f"bundled v2 skill is missing: {skill_name}")
+        if f"name: {skill_name}" not in skill_file.read_text(encoding="utf-8"):
+            raise _resolution_error(f"bundled skill identity does not match: {skill_name}")
+        paths.append(skill_path)
+    return PluginSkillResolution(plugin_id, version, skills_root, tuple(paths))
+
+
+def resolve_plugin_skill(plugin_root: Path) -> PluginSkillResolution:
+    """Compatibility spelling that now resolves the complete v2 pack."""
+    return resolve_plugin_skills(plugin_root)
 
 
 def relative_files(root: Path) -> dict[str, Path]:
-    """Return all regular files under ``root`` keyed by POSIX path."""
     if not root.is_dir():
         raise FileNotFoundError(f"directory does not exist: {root}")
     files: dict[str, Path] = {}
@@ -105,7 +91,6 @@ def relative_files(root: Path) -> dict[str, Path]:
 
 
 def assert_exact_files(files: dict[str, Path], expected: frozenset[str], *, label: str) -> None:
-    """Fail closed when a source or release tree contains an unknown file."""
     actual = set(files)
     missing = sorted(expected - actual)
     unexpected = sorted(actual - expected)
@@ -116,3 +101,7 @@ def assert_exact_files(files: dict[str, Path], expected: frozenset[str], *, labe
         if unexpected:
             details.append(f"unexpected {label} files: {', '.join(unexpected)}")
         raise ValueError("; ".join(details))
+
+
+def expected_release_files() -> frozenset[str]:
+    return PLUGIN_ROOT_FILES | RUNTIME_SKILL_FILES

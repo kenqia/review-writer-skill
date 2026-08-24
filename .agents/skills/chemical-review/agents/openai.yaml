@@ -1,6 +1,0 @@
-interface:
-  display_name: "Chemical Review"
-  short_description: "Iteratively produce a critical narrative chemical literature review"
-  default_prompt: "Use $chemical-review to develop or iteratively revise a critical narrative chemical literature review."
-policy:
-  allow_implicit_invocation: false

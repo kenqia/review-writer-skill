@@ -1,0 +1,6 @@
+interface:
+  display_name: "Chemical Review Intent"
+  short_description: "Create and confirm a chemistry review brief."
+  default_prompt: "Use $chemical-review-intent to define and confirm the review question, scope, and evidence boundary."
+policy:
+  allow_implicit_invocation: false

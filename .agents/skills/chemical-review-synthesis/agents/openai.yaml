@@ -1,0 +1,6 @@
+interface:
+  display_name: "Chemical Review Synthesis"
+  short_description: "Write one evidence-bounded critical review draft."
+  default_prompt: "Use $chemical-review-synthesis to compare the Research evidence and produce the current draft.md."
+policy:
+  allow_implicit_invocation: false

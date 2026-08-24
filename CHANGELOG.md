@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0-beta.1 — v2 implementation candidate
+
+- Replace the v1 seven-stage orchestrator with four independently invocable
+  Intent, Research, Synthesis, and QA skills using explicit Markdown handoffs.
+- Add configurable OpenAlex, Semantic Scholar, Crossref, PubChem, ChEBI,
+  Unpaywall, Europe PMC, CORE, and MinerU adapters plus an authorized-PDF wait
+  and resume path.
+- Add evidence-bounded Synthesis and four isolated QA roles with
+  conflict-preserving aggregation.
+- Remove the v1 runtime and generated projection from the supported package.
+
 ## 0.1.0-beta.1 — release candidate
 
 - Package Chemical Review as a Codex plugin with a versioned manifest.

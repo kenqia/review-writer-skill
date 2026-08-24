@@ -1,7 +1,7 @@
 {
   "name": "chemical-review",
-  "version": "0.1.0-beta.1",
-  "description": "An iterative research-companion workflow for critical narrative chemical literature reviews.",
+  "version": "0.2.0-beta.1",
+  "description": "Four composable, evidence-governed skills for critical narrative chemical literature reviews.",
   "author": {
     "name": "Review Writer contributors",
     "url": "https://github.com/kenqia/review-writer-skill"
@@ -14,15 +14,15 @@
   "interface": {
     "displayName": "Chemical Review",
     "shortDescription": "Iteratively develop a critical chemical literature review.",
-    "longDescription": "Treats the model as a research companion across Grill, Research, Prototype, PRD, Issues, Implement, and Review, with human feedback routed into later iterations. It does not claim scientific validity or journal acceptance.",
+    "longDescription": "Separates Intent, Research, Synthesis, and multi-angle QA through explicit Markdown handoffs, legal full-text waits, locator-bound evidence, and human scientific acceptance. It does not claim scientific validity or journal acceptance.",
     "developerName": "Review Writer contributors",
     "category": "Research",
     "capabilities": ["Interactive", "Research", "Write"],
     "websiteURL": "https://github.com/kenqia/review-writer-skill",
     "defaultPrompt": [
-      "Use $chemical-review to develop a critical chemical literature review.",
-      "Use $chemical-review to continue an existing review project.",
-      "Use $chemical-review to route human review feedback into the next iteration."
+      "Use $chemical-review-intent to define and confirm a chemistry review brief.",
+      "Use $chemical-review-research to discover sources, route legal full text, and prepare evidence.",
+      "Use $chemical-review-synthesis and $chemical-review-qa to draft and independently audit the review."
     ]
   }
 }

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Chemical Review Research"
+  short_description: "Prepare legal full-text and locator-bound chemistry evidence."
+  default_prompt: "Use $chemical-review-research after Intent confirmation to discover sources and prepare a research handoff."
+policy:
+  allow_implicit_invocation: false

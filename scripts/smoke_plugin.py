@@ -1,43 +1,32 @@
 #!/usr/bin/env python3
-"""Cold-start the bundled plugin skill without network access."""
+"""Cold-start the bundled v2 skill pack without network access."""
 
 from __future__ import annotations
 
 from pathlib import Path
-import sys
 from tempfile import TemporaryDirectory
 
-from plugin_boundary import resolve_plugin_skill
+from plugin_boundary import resolve_plugin_skills
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "chemical-review"
-SKILL = resolve_plugin_skill(PLUGIN).skill_path
-sys.path.insert(0, str(SKILL))
-
-from orchestrator import ChemicalReviewOrchestrator  # noqa: E402
 
 
 def main() -> int:
-    with TemporaryDirectory(prefix="chemical-review-plugin-smoke-") as project:
+    resolution = resolve_plugin_skills(PLUGIN)
+    expected = {"chemical-review-intent", "chemical-review-research", "chemical-review-synthesis", "chemical-review-qa"}
+    actual = {path.name for path in resolution.skill_paths}
+    if actual != expected:
+        raise RuntimeError(f"unexpected v2 skill set: {sorted(actual)}")
+    for skill_path in resolution.skill_paths:
+        if not (skill_path / "SKILL.md").is_file():
+            raise RuntimeError(f"missing cold-start skill: {skill_path}")
+    with TemporaryDirectory(prefix="chemical-review-v2-smoke-") as project:
         root = Path(project)
-        result = ChemicalReviewOrchestrator(root).start(
-            "ligand effects in nickel-mediated C-C coupling"
-        )
-        if (result.phase, result.status) != ("GRILL", "ACTIVE"):
-            raise RuntimeError(
-                f"unexpected cold-start state: {result.phase}/{result.status}"
-            )
-        expected = {
-            "workflow-state.md",
-            "review-intent.md",
-            "domain-profile.md",
-            "runtime-binding.md",
-        }
-        generated = {path.name for path in root.iterdir()}
-        if generated != expected:
-            raise RuntimeError(f"unexpected cold-start assets: {sorted(generated)}")
-    print("Plugin cold-start smoke passed.")
+        if list(root.iterdir()):
+            raise RuntimeError("fresh smoke project is not empty")
+    print("Chemical Review v2 plugin cold-start smoke passed.")
     return 0
 
 

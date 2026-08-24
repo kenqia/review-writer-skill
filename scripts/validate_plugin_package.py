@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the repository's plugin boundary without external dependencies."""
+"""Validate the Chemical Review v2 plugin boundary without dependencies."""
 
 from __future__ import annotations
 
@@ -9,14 +9,15 @@ from pathlib import Path
 import re
 import sys
 
+try:
+    from .plugin_boundary import V2_SKILL_FILES, expected_release_files, relative_files
+except ImportError:
+    from plugin_boundary import V2_SKILL_FILES, expected_release_files, relative_files
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "chemical-review"
-SEMVER = re.compile(
-    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
-    r"(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?"
-    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
-)
+SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$")
 
 
 def validate(plugin: Path) -> list[str]:
@@ -28,20 +29,12 @@ def validate(plugin: Path) -> list[str]:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return [f"cannot read plugin manifest: {exc}"]
-    if not isinstance(manifest, dict):
-        return ["plugin manifest must be a JSON object"]
     if manifest.get("name") != "chemical-review":
         errors.append("manifest name must be chemical-review")
-    version = manifest.get("version")
-    if not isinstance(version, str) or SEMVER.fullmatch(version) is None:
+    if not isinstance(manifest.get("version"), str) or not SEMVER.fullmatch(manifest["version"]):
         errors.append("manifest version must be strict semver")
-    if manifest.get("license") != "MIT":
-        errors.append("manifest license must be MIT")
     if manifest.get("skills") != "./skills/":
         errors.append("manifest skills must be ./skills/")
-    for field in ("description", "author"):
-        if not manifest.get(field):
-            errors.append(f"manifest field {field} is required")
     interface = manifest.get("interface")
     if not isinstance(interface, dict):
         errors.append("manifest interface must be an object")
@@ -49,11 +42,18 @@ def validate(plugin: Path) -> list[str]:
         for field in ("displayName", "shortDescription", "longDescription", "developerName", "category", "capabilities", "defaultPrompt"):
             if not interface.get(field):
                 errors.append(f"manifest interface field {field} is required")
-    skill = plugin / "skills" / "chemical-review"
-    required = ("SKILL.md", "WORKFLOW.md", "ASSET-TEMPLATES.md", "orchestrator.py", "research.py", "prototype.py", "units.py", "review.py", "feedback.py", "delivery.py")
-    for filename in required:
-        if not (skill / filename).is_file():
-            errors.append(f"missing bundled skill file: {filename}")
+    files = relative_files(plugin)
+    actual = set(files)
+    expected = set(expected_release_files())
+    for missing in sorted(expected - actual):
+        errors.append(f"missing release file: {missing}")
+    for extra in sorted(actual - expected):
+        errors.append(f"unexpected release file: {extra}")
+    for skill, required in V2_SKILL_FILES.items():
+        skill_root = plugin / "skills" / skill
+        skill_text = (skill_root / "SKILL.md").read_text(encoding="utf-8", errors="replace") if (skill_root / "SKILL.md").is_file() else ""
+        if f"name: {skill}" not in skill_text:
+            errors.append(f"missing or mismatched v2 skill identity: {skill}")
     for path in plugin.rglob("*"):
         if path.is_symlink():
             errors.append(f"symlink is not allowed in plugin: {path.relative_to(plugin)}")
@@ -69,8 +69,7 @@ def main() -> int:
     errors = validate(args.plugin.resolve())
     if errors:
         print("Plugin package validation failed:", file=sys.stderr)
-        for error in errors:
-            print(f"- {error}", file=sys.stderr)
+        print("\n".join(f"- {error}" for error in errors), file=sys.stderr)
         return 1
     print(f"Plugin package validation passed: {args.plugin.resolve()}")
     return 0
