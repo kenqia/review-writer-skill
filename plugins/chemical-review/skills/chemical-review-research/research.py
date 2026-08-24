@@ -31,14 +31,15 @@ SEARCH_PATHS = (
     "citation relations", "authors/groups", "recent developments",
 )
 DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.I)
+DOWNLOAD_QUEUE_LIMIT = 10
+_SENSITIVE_QUERY_RE = re.compile(
+    r"([?&](?:api[_-]?key|access[_-]?token|auth(?:orization)?|password|secret|token|key)=)[^&\s]+",
+    re.I,
+)
 
 
 class ProviderUnavailable(RuntimeError):
     """A configured provider failed or is not configured."""
-
-
-class BindingRequired(RuntimeError):
-    """A user PDF cannot be bound deterministically."""
 
 
 @dataclass(frozen=True)
@@ -140,7 +141,7 @@ class _Adapter:
                 return self.transport.request(method, url, headers=headers or {"Accept": "application/json"}, body=body, timeout=self.settings.timeout)
             except Exception as exc:  # adapters expose honest degradation, never a false success
                 last = exc
-                self.last_error = str(exc)
+                self.last_error = _safe_error(str(exc))
         raise ProviderUnavailable(f"{self.name} request failed after configured retries") from last
 
 
@@ -225,7 +226,15 @@ class CrossrefAdapter(_Adapter):
         result: list[Paper] = []
         for row in (payload.get("message") or {}).get("items", []):
             if isinstance(row, Mapping) and row.get("DOI"):
-                result.append(Paper("doi:" + str(row["DOI"]).lower(), str((row.get("title") or ["Untitled"])[0]), str(row["DOI"]), (row.get("published-print") or row.get("published-online") or {}).get("date-parts", [[None]])[0][0], self.name))
+                result.append(
+                    Paper(
+                        identifier="doi:" + str(row["DOI"]).lower(),
+                        title=str((row.get("title") or ["Untitled"])[0]),
+                        doi=str(row["DOI"]),
+                        year=(row.get("published-print") or row.get("published-online") or {}).get("date-parts", [[None]])[0][0],
+                        provider=self.name,
+                    )
+                )
         return tuple(result)
 
 
@@ -330,7 +339,10 @@ class MinerUParser:
     def parse(self, pdf: Path, identifier: str) -> tuple[tuple[str, ...], tuple[str, ...], str]:
         if self.command.strip():
             command = shlex.split(self.command) + [str(pdf)]
-            completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=180)
+            try:
+                completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=180)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise ProviderUnavailable("MinerU command failed; inspect parser degradation") from exc
             if completed.returncode != 0 or not completed.stdout.strip():
                 raise ProviderUnavailable("MinerU command failed; inspect parser degradation")
             sections = tuple(part.strip() for part in completed.stdout.replace("\r\n", "\n").split("\f") if part.strip())
@@ -339,7 +351,10 @@ class MinerUParser:
             headers = {"Content-Type": "application/pdf", "Accept": "application/json"}
             if self.token:
                 headers["Authorization"] = "Bearer " + self.token
-            response = self.transport.request("POST", self.endpoint, headers=headers, body=pdf.read_bytes(), timeout=180)
+            try:
+                response = self.transport.request("POST", self.endpoint, headers=headers, body=pdf.read_bytes(), timeout=180)
+            except Exception as exc:
+                raise ProviderUnavailable("MinerU endpoint request failed; inspect parser degradation") from exc
             payload = _json_body(response)
             text = payload.get("markdown") or payload.get("text") or payload.get("content")
             if not isinstance(text, str) or not text.strip():
@@ -388,24 +403,20 @@ class ResearchStage:
         self._ensure_dirs()
         fixture = self._load_fixture(fixture_dir)
         if adapters is None:
-            adapters = tuple(
-                adapter()
-                for adapter in (OpenAlexAdapter, SemanticScholarAdapter, CrossrefAdapter)
-                if _provider_allowed(adapter.name)
-            )
+            adapters = _configured_discovery_adapters()
         if entity_adapters is None:
-            entity_adapters = tuple(
-                adapter()
-                for adapter in (PubChemAdapter, ChebiAdapter)
-                if _provider_allowed(adapter.name)
-            )
+            entity_adapters = _configured_entity_adapters()
+        if full_text_adapters is None:
+            full_text_adapters = _configured_full_text_adapters()
         terms, entity_failures = self._expand_entities(brief, entity_adapters)
         papers = self._discover(brief, fixture, adapters, terms=terms)
-        papers = self._locate_full_text(papers, full_text_adapters or ())
+        papers = self._locate_full_text(papers, full_text_adapters)
         records = self._load_records()
         for paper in papers:
             records[paper.identifier] = {**asdict(paper), "source_id": _source_id(paper.identifier), "local_path": "", "digest": "", "parser": "", "locators": [], "full_text": "UNKNOWN", "failure": ""}
         requests: list[dict[str, str]] = []
+        pending_requests: list[dict[str, str]] = []
+        research_gap = False
         parsed_count = 0
         parsed_fixture = fixture.get("parsed", {}) if isinstance(fixture, Mapping) else {}
         for paper in papers:
@@ -422,7 +433,8 @@ class ResearchStage:
                     self._append_evidence(paper, parsed[0], parsed[1], parsed[2], parsed[3])
                     parsed_count += 1
                 except ProviderUnavailable as exc:
-                    record.update({"full_text": "FOUND", "parser": "UNPARSED", "failure": str(exc)})
+                    research_gap = True
+                    record.update({"full_text": "FOUND", "parser": "UNPARSED", "failure": _safe_error(str(exc))})
             elif paper.full_text_url and paper.full_text_direct and paper.access_basis == "OPEN_ACCESS":
                 target = self.root / "fulltext" / (_source_id(paper.identifier) + ".pdf")
                 try:
@@ -433,24 +445,30 @@ class ResearchStage:
                     self._append_evidence(paper, parsed[0], parsed[1], parsed[2], parsed[3])
                     parsed_count += 1
                 except ProviderUnavailable as exc:
-                    record["failure"] = str(exc)
+                    failure = _safe_error(str(exc))
+                    research_gap = True
+                    record.update({"full_text": "WAITING_FOR_USER", "failure": failure})
+                    if _download_priority(paper) > 0:
+                        pending_requests.append(self._download_request(paper, record, reason=failure))
+                    else:
+                        research_gap = True
             else:
-                requests.append({
-                    "source_id": record["source_id"], "identity": paper.identifier,
-                    "title": paper.title, "url": paper.full_text_url or "not-found",
-                    "access_basis": paper.access_basis or "AUTHORIZATION_UNCLEAR",
-                    "suggested_filename": _source_id(paper.identifier) + ".pdf",
-                    "target_inbox": "research/inbox/authorized-pdfs/",
-                    "claim_relevance": paper.claim_relevance or "Review core claim; confirm relevance before downloading.",
-                    "next_action": "Download only through a legal route, place the PDF in the target inbox, then rerun Research.",
-                })
-                record.update({"full_text": "WAITING_FOR_USER", "failure": "legal user download required"})
+                failure = "legal user download required" if paper.full_text_url else "no legal full-text URL was located"
+                record.update({"full_text": "WAITING_FOR_USER" if paper.full_text_url else "MISSING", "failure": failure})
+                if paper.full_text_url and _download_priority(paper) > 0:
+                    pending_requests.append(self._download_request(paper, record, reason=failure))
+                else:
+                    research_gap = True
+        pending_requests.sort(key=lambda item: (-int(item["priority_score"]), item["source_id"]))
+        requests = [{key: value for key, value in request.items() if key != "priority_score"} for request in pending_requests[:DOWNLOAD_QUEUE_LIMIT]]
+        if len(pending_requests) > len(requests):
+            research_gap = True
         self._write_records(records)
         self._write_supporting_assets(brief, papers, records, requests, terms, entity_failures)
         self._write_provider_status((*adapters, *entity_adapters), full_text_adapters or ())
         if requests:
             status, next_action = "WAITING_FOR_USER", "Complete the finite download queue in download-requests.md, then rerun Research."
-        elif parsed_count:
+        elif parsed_count and not research_gap:
             status, next_action = "READY_FOR_SYNTHESIS", "Synthesis may read research-handoff.md and evidence-notes.md; original PDFs remain authoritative."
         else:
             status, next_action = "RESEARCH_GAP", "Add a verified source, configure a provider, or narrow the confirmed scope; no source fact was invented."
@@ -490,7 +508,7 @@ class ResearchStage:
             return [_paper_from_mapping(row) for row in fixture["papers"] if isinstance(row, Mapping)]
         topic = _section(brief, "Topic") or _section(brief, "Research question")
         if adapters is None:
-            adapters = tuple(adapter() for adapter in (OpenAlexAdapter, SemanticScholarAdapter, CrossrefAdapter) if _provider_allowed(adapter.name))
+            adapters = _configured_discovery_adapters()
         found: dict[str, Paper] = {}
         for adapter in adapters:
             try:
@@ -601,20 +619,30 @@ class ResearchStage:
         candidates = list(self.inbox.glob("*.pdf"))
         if not candidates:
             return None
-        identity_key = _compact(paper.identifier + " " + paper.doi + " " + _source_id(paper.identifier))
-        matches = [path for path in candidates if _compact(path.stem) in identity_key or _compact(path.stem) in _compact(paper.doi)]
+        identity_keys = {
+            _compact(value)
+            for value in (paper.identifier, paper.doi, _source_id(paper.identifier))
+            if value
+        }
+        matches = [path for path in candidates if _compact(path.stem) in identity_keys]
         if len(matches) == 1:
             return matches[0]
         manifest = self.inbox / "manifest.md"
         if manifest.is_file():
             for line in manifest.read_text(encoding="utf-8").splitlines():
-                if "|" in line and paper.identifier in line:
-                    filename = line.split("|")[1].strip()
-                    candidate = self.inbox / filename
-                    if candidate.is_file():
-                        return candidate
-        if len(candidates) == 1 and len(paper.identifier) < 4:
-            return candidates[0]
+                if "|" not in line:
+                    continue
+                fields = [field.strip() for field in line.strip().strip("|").split("|")]
+                if len(fields) < 2 or not any(field in {paper.identifier, paper.doi, _source_id(paper.identifier)} for field in fields):
+                    continue
+                filename = fields[0] if fields[0].lower().endswith(".pdf") else fields[1]
+                candidate = (self.inbox / filename).resolve()
+                try:
+                    candidate.relative_to(self.inbox.resolve())
+                except ValueError:
+                    continue
+                if candidate.is_file() and candidate.suffix.lower() == ".pdf":
+                    return candidate
         if candidates and len(matches) != 1:
             (self.root / "binding-requests.md").write_text(
                 "# PDF Binding Requests\n\nAmbiguous or unmatched files require explicit human mapping in inbox/authorized-pdfs/manifest.md.\n\n"
@@ -639,11 +667,36 @@ class ResearchStage:
         return sections, locators, "pdftotext", f"LOW_FIDELITY_FALLBACK: {mineru_error}; complex layout, figures and tables require original PDF verification."
 
     def _download(self, url: str, target: Path, *, transport: Any | None = None) -> None:
-        response = (transport or UrllibTransport()).request("GET", url, headers={"Accept": "application/pdf"}, timeout=30)
+        try:
+            response = (transport or UrllibTransport()).request("GET", url, headers={"Accept": "application/pdf"}, timeout=30)
+        except Exception as exc:
+            raise ProviderUnavailable("direct PDF route request failed; use the recorded legal URL for manual download") from exc
         if response.status >= 400 or not isinstance(response.body, (bytes, bytearray)):
             raise ProviderUnavailable("direct PDF route did not return bytes")
+        content_type = next((str(value) for key, value in response.headers.items() if key.lower() == "content-type"), "").lower()
+        if content_type and not (content_type.startswith("application/pdf") or content_type.startswith("application/octet-stream")):
+            raise ProviderUnavailable("direct PDF route returned a non-PDF content type")
+        if not bytes(response.body)[:1024].lstrip().startswith(b"%PDF"):
+            raise ProviderUnavailable("direct PDF route did not return a PDF document")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(bytes(response.body))
+
+    @staticmethod
+    def _download_request(paper: Paper, record: Mapping[str, Any], *, reason: str) -> dict[str, str]:
+        return {
+            "source_id": str(record["source_id"]),
+            "identity": paper.identifier,
+            "title": paper.title,
+            "url": paper.full_text_url,
+            "access_basis": paper.access_basis or "AUTHORIZATION_UNCLEAR",
+            "suggested_filename": _source_id(paper.identifier) + ".pdf",
+            "target_inbox": "research/inbox/authorized-pdfs/",
+            "claim_relevance": paper.claim_relevance or "Core/high-priority source; confirm relevance before downloading.",
+            "priority": paper.priority,
+            "priority_score": str(_download_priority(paper)),
+            "failure": reason,
+            "next_action": "Download only through a legal route, place the PDF in the target inbox, then rerun Research.",
+        }
 
     def _append_evidence(self, paper: Paper, sections: Sequence[str], locators: Sequence[str], parser: str, note: str) -> None:
         path = self.root / "evidence-notes.md"
@@ -664,7 +717,21 @@ class ResearchStage:
         (self.root / "search-log.md").write_text("# Search Log\n\n" + "\n".join(f"- {path}: query derived from confirmed brief and entity terms" for path in SEARCH_PATHS) + "\n", encoding="utf-8")
         (self.root / "terms-and-entities.md").write_text("# Terms and Chemistry Entities\n\n" + "\n".join(f"- {term}" for term in terms) + ("\n\n## Provider degradation\n\n" + "\n".join(f"- {failure}" for failure in entity_failures) if entity_failures else "") + "\n", encoding="utf-8")
         (self.root / "comparability-matrix.md").write_text("# Comparability Matrix\n\n| Source | Conditions | Units | Endpoint | Comparable? | Notes |\n| --- | --- | --- | --- | --- | --- |\n" + "\n".join(f"| {record.get('source_id')} | UNKNOWN | UNKNOWN | UNKNOWN | NOT_COMPARABLE until checked | {record.get('claim_relevance', '')} |" for record in records.values()) + "\n", encoding="utf-8")
-        (self.root / "research-gaps.md").write_text("# Research Gaps\n\n" + ("\n".join(f"- {request['identity']}: missing full text affects claim: {request['claim_relevance']}" for request in requests) or "- No unresolved download request recorded; claim-level verification remains a human/agent task.") + "\n", encoding="utf-8")
+        requested_ids = {request["identity"] for request in requests}
+        unresolved = [
+            record for record in records.values()
+            if (record.get("full_text") in {"WAITING_FOR_USER", "MISSING"} or record.get("parser") == "UNPARSED")
+            and record.get("identifier") not in requested_ids
+        ]
+        gap_lines = [
+            f"- {request['identity']}: missing full text affects claim: {request['claim_relevance']}"
+            for request in requests
+        ]
+        gap_lines.extend(
+            f"- {record.get('identifier')}: {record.get('failure') or 'unresolved research gap'}"
+            for record in unresolved
+        )
+        (self.root / "research-gaps.md").write_text("# Research Gaps\n\n" + ("\n".join(gap_lines) or "- No unresolved download request recorded; claim-level verification remains a human/agent task.") + "\n", encoding="utf-8")
         request_lines = ["# Download Requests", "", "Only use legal routes. Do not bypass login, institutional access, CAPTCHA, or unclear authorization.", ""]
         for request in requests:
             request_lines.extend([f"## {request['source_id']}", ""] + [f"- {key}: {value}" for key, value in request.items()] + [""])
@@ -704,12 +771,18 @@ def _section(text: str, heading: str) -> str:
     return " ".join(match.group(1).split()) if match else ""
 
 
-def _provider_allowed(name: str) -> bool:
-    return bool(os.environ.get("CHEMICAL_REVIEW_ENABLE_NETWORK", "")) or name == "OpenAlex"
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _configured_discovery_adapters() -> tuple[Any, ...]:
+    if not _env_enabled("CHEMICAL_REVIEW_ENABLE_NETWORK"):
+        return ()
+    return tuple(adapter() for adapter in (OpenAlexAdapter, SemanticScholarAdapter, CrossrefAdapter))
 
 
 def _configured_full_text_adapters() -> tuple[Any, ...]:
-    if not os.environ.get("CHEMICAL_REVIEW_ENABLE_NETWORK", ""):
+    if not _env_enabled("CHEMICAL_REVIEW_ENABLE_NETWORK"):
         return ()
     adapters: list[Any] = [EuropePmcAdapter()]
     if os.environ.get("UNPAYWALL_EMAIL", "").strip():
@@ -720,9 +793,26 @@ def _configured_full_text_adapters() -> tuple[Any, ...]:
 
 
 def _configured_entity_adapters() -> tuple[Any, ...]:
-    if not os.environ.get("CHEMICAL_REVIEW_ENABLE_NETWORK", ""):
+    if not _env_enabled("CHEMICAL_REVIEW_ENABLE_NETWORK"):
         return ()
     return (PubChemAdapter(), ChebiAdapter())
+
+
+def _download_priority(paper: Paper) -> int:
+    priority = paper.priority.strip().upper()
+    score = {"CORE": 3, "HIGH": 2, "IMPORTANT": 2, "NORMAL": 1, "LOW": 0}.get(priority, 1)
+    if paper.claim_relevance.strip():
+        score = max(score, 1)
+    return score
+
+
+def _safe_error(value: str) -> str:
+    redacted = _SENSITIVE_QUERY_RE.sub(r"\1[REDACTED]", value)
+    for name in ("OPENALEX_API_KEY", "SEMANTIC_SCHOLAR_API_KEY", "CORE_API_KEY", "MINERU_TOKEN"):
+        secret = os.environ.get(name, "").strip()
+        if secret:
+            redacted = redacted.replace(secret, "[REDACTED]")
+    return redacted[:500]
 
 
 def _load_env_file(path: Path) -> None:

@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 import argparse
 import json
 from pathlib import Path
-import re
 from typing import Mapping
 
 
@@ -46,11 +45,6 @@ class ReviewBrief:
 
 def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def _slug(value: str) -> str:
-    value = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower()).strip("-")
-    return value[:70] or "review"
 
 
 def _frontmatter(text: str) -> tuple[dict[str, str], str]:

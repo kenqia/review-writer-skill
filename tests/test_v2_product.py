@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -181,6 +183,22 @@ class V2ProductTests(unittest.TestCase):
         ]
         self.assertTrue(all(outputs))
         self.assertNotIn("configured-but-not-written", repr(outputs))
+        crossref = outputs[2][0]
+        self.assertEqual(crossref.provider, "Crossref")
+        self.assertEqual(crossref.authors, ())
+
+    def test_provider_errors_are_redacted_before_status_is_persisted(self):
+        research = load_module("v2_provider_redaction_test", V2_SKILLS["chemical-review-research"] / "research.py")
+
+        class FailingTransport:
+            def request(self, method, url, *, headers, body=None, timeout):
+                raise RuntimeError("GET https://provider.invalid?api_key=SUPERSECRET")
+
+        adapter = research.OpenAlexAdapter(api_key="SUPERSECRET", transport=FailingTransport())
+        with self.assertRaises(research.ProviderUnavailable):
+            adapter.search("a", limit=1)
+        self.assertNotIn("SUPERSECRET", adapter.last_error)
+        self.assertIn("[REDACTED]", adapter.last_error)
 
     def test_configured_open_access_locator_is_downloaded_and_recorded_before_parse(self):
         research = load_module("v2_open_access_route", V2_SKILLS["chemical-review-research"] / "research.py")
@@ -217,6 +235,33 @@ class V2ProductTests(unittest.TestCase):
             registry = (project / "research" / "source-registry.md").read_text(encoding="utf-8")
             self.assertIn("https://oa.example/core.pdf", registry)
             self.assertEqual(len(list((project / "research" / "fulltext").glob("*.pdf"))), 1)
+
+    def test_direct_download_failure_returns_a_user_route_and_rejects_html(self):
+        research = load_module("v2_download_failure", V2_SKILLS["chemical-review-research"] / "research.py")
+
+        class HtmlTransport:
+            def request(self, method, url, *, headers, body=None, timeout):
+                return research.HttpResponse(200, {"content-type": "text/html"}, b"<html>login</html>")
+
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / "paper.pdf"
+            with self.assertRaises(research.ProviderUnavailable):
+                research.ResearchStage(Path(temp))._download("https://oa.example/paper.pdf", target, transport=HtmlTransport())
+
+    def test_mineru_timeout_degrades_to_pdftotext(self):
+        research = load_module("v2_mineru_timeout", V2_SKILLS["chemical-review-research"] / "research.py")
+        parser = research.MinerUParser(command="mineru --output markdown")
+        with tempfile.TemporaryDirectory() as temp:
+            pdf = Path(temp) / "paper.pdf"
+            pdf.write_bytes(b"%PDF fixture")
+            with patch.object(research.subprocess, "run", side_effect=research.subprocess.TimeoutExpired("mineru", 180)):
+                with self.assertRaises(research.ProviderUnavailable):
+                    parser.parse(pdf, "doi:10.1/x")
+            stage = research.ResearchStage(Path(temp))
+            with patch.dict(os.environ, {"MINERU_COMMAND": "configured"}), patch.object(research.MinerUParser, "parse", side_effect=research.ProviderUnavailable("timeout")), patch.object(research, "_pdftotext", return_value=(("fallback",), ("paper.pdf#page=1",))):
+                sections, locators, parser_name, note = stage._parse(pdf, "doi:10.1/x", None)
+            self.assertEqual((sections, locators, parser_name), (("fallback",), ("paper.pdf#page=1",), "pdftotext"))
+            self.assertIn("LOW_FIDELITY_FALLBACK", note)
 
     def test_unmatched_inbox_pdf_is_held_for_explicit_binding(self):
         research = load_module("v2_binding_research", V2_SKILLS["chemical-review-research"] / "research.py")
@@ -263,6 +308,9 @@ class V2ProductTests(unittest.TestCase):
             )
             draft = synthesis.SynthesisStage(project).publish(candidate)
             self.assertEqual(draft.status, "UNREVIEWED_PARTIAL")
+            self.assertTrue((project / "reader-draft.md").is_file())
+            self.assertTrue((project / "research-draft.md").is_file())
+            self.assertNotIn("SOURCE_FACT [", (project / "reader-draft.md").read_text(encoding="utf-8"))
             qa_stage = qa.QAStage(project)
             contexts = qa_stage.prepare()
             self.assertEqual(len(contexts), 4)
@@ -288,6 +336,18 @@ class V2ProductTests(unittest.TestCase):
             (research_dir / "evidence-notes.md").write_text("SOURCE_EXCERPT [doi:10.1234/x @ paper.pdf#page=1]: excerpt\n", encoding="utf-8")
             with self.assertRaises(synthesis.EvidenceBoundaryError):
                 synthesis.SynthesisStage(project).publish("SOURCE_FACT [doi:10.1234/x @ paper.pdf#page=1]: invented fact")
+
+    def test_synthesis_rejects_a_mismatched_fact_at_anotherwise_valid_locator(self):
+        synthesis = load_module("v2_synthesis_claim_match", V2_SKILLS["chemical-review-synthesis"] / "synthesis.py")
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "review-brief.md").write_text("---\nconfirmed: true\n---\n", encoding="utf-8")
+            research_dir = project / "research"
+            research_dir.mkdir()
+            (research_dir / "research-handoff.md").write_text("Result: READY_FOR_SYNTHESIS\n", encoding="utf-8")
+            (research_dir / "evidence-notes.md").write_text("VERIFIED_SOURCE_FACT [doi:10.1/x @ paper.pdf#page=1]: 80% selectivity.\n", encoding="utf-8")
+            with self.assertRaises(synthesis.EvidenceBoundaryError):
+                synthesis.SynthesisStage(project).publish("SOURCE_FACT [doi:10.1/x @ paper.pdf#page=1]: 90% selectivity.")
 
     def test_fresh_project_black_box_intent_research_synthesis_qa(self):
         intent = load_module("v2_e2e_intent", V2_SKILLS["chemical-review-intent"] / "intent.py")

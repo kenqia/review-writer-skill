@@ -45,7 +45,7 @@ Research 独占 `research/`：source registry、evidence notes、search log、co
 
 MinerU 是正式主解析器，`pdftotext` 是明确标注 `LOW_FIDELITY_FALLBACK` 的本地降级；原始 PDF 始终是来源权威，解析文本只是带 locator 的阅读辅助。凭据只能来自环境变量或未跟踪 env 文件，真实值不进入仓库、handoff 或 cache。
 
-Synthesis 读取确认后的 Intent 和 Research 文档，写唯一 `draft.md`。正文保留 `SOURCE_FACT`、`MODEL_SYNTHESIS`、`MODEL_HYPOTHESIS`、`UNKNOWN`、`NOT_COMPARABLE` 和 `Chemical GAP`；研究缺口下只允许明确标记的 unreviewed、evidence-bounded、partial-scope 候选稿。
+Synthesis 读取确认后的 Intent 和 Research 文档，写唯一内容源 `draft.md`，并从同一输入生成面向读者的 `reader-draft.md` 和带主张层级/locator 的 `research-draft.md`；三者不能各自独立演化。正文保留 `SOURCE_FACT`、`MODEL_SYNTHESIS`、`MODEL_HYPOTHESIS`、`UNKNOWN`、`NOT_COMPARABLE` 和 `Chemical GAP`；研究缺口下只允许明确标记的 unreviewed、evidence-bounded、partial-scope 候选稿。
 
 QA 为同一版输入准备四个互不污染的干净上下文：evidence/locator、chemistry comparability/mechanism、synthesis novelty/rebuttal、overclaim/counterexample。arbiter 写 `qa/review-report.md`、`qa/qa-plan.md`、`qa/revision-plan.md`，保留冲突并把修改路由回 Intent、Research 或 Synthesis；不通过投票替人类接受科学结论。
 

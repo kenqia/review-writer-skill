@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — review hardening
+
+- Fail closed on mismatched source-fact content, non-PDF downloads, ambiguous
+  inbox identities, parser timeouts, and provider error credential leakage.
+- Bound user download requests to a finite priority queue and preserve deferred
+  research gaps; generate synchronized reader and research draft views.
+
 ## 0.2.0-beta.1 — v2 implementation candidate
 
 - Replace the v1 seven-stage orchestrator with four independently invocable

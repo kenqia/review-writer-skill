@@ -72,9 +72,10 @@ class SynthesisStage:
         status = "UNREVIEWED_PARTIAL" if partial else "UNREVIEWED"
         header = "\n".join(["---", "kind: synthesis-draft", "schema: 2", f"status: {status}", f"revision: {revision}", f"updated_at: {_now()}", "owner: Synthesis", "---", ""])
         self.draft_path.write_text(header + content.rstrip() + "\n", encoding="utf-8")
+        self._write_views(content, status, revision)
         next_action = "Return to Research before broadening scope." if partial else "Proceed to QA with four independent clean-context reviews."
         (self.project_root / "synthesis-handoff.md").write_text(
-            "\n".join(["# Synthesis Handoff", "", f"Result: {status}", f"Draft: {self.draft_path.name}", f"Next action: {next_action}", "", "Synthesis owns draft.md. Research artifacts are read-only inputs; QA may report issues but must not mutate the draft.", ""]),
+            "\n".join(["# Synthesis Handoff", "", f"Result: {status}", f"Draft: {self.draft_path.name}", "Reader view: reader-draft.md", "Research view: research-draft.md", f"Next action: {next_action}", "", "Synthesis owns draft.md and its generated views. Research artifacts are read-only inputs; QA may report issues but must not mutate the draft.", ""]),
             encoding="utf-8",
         )
         return DraftResult(status, self.draft_path, next_action, revision)
@@ -94,11 +95,42 @@ class SynthesisStage:
 
     @staticmethod
     def _validate_source_facts(content: str, evidence: str) -> None:
+        evidence_facts = {
+            (match.group(1).strip(), match.group(2).strip()): " ".join(match.group(3).split())
+            for match in re.finditer(
+                r"^\s*(?:-\s*)?(?:VERIFIED_)?SOURCE_FACT\s*\[([^\]@]+)\s*@\s*([^\]]+)\]\s*:\s*(.+?)\s*$",
+                evidence,
+                re.M,
+            )
+        }
         for match in re.finditer(r"SOURCE_FACT\s*\[([^\]@]+)\s*@\s*([^\]]+)\]", content):
             identity, locator = match.group(1).strip(), match.group(2).strip()
-            verified = re.search(rf"(?:VERIFIED_)?SOURCE_FACT\s*\[{re.escape(identity)}\s*@\s*{re.escape(locator)}\]", evidence)
-            if not verified:
+            evidence_claim = evidence_facts.get((identity, locator))
+            if evidence_claim is None:
                 raise EvidenceBoundaryError(f"verified SOURCE_FACT locator is not present in Research evidence notes: {identity} @ {locator}")
+            draft_line = content[match.end():].splitlines()[0].strip()
+            draft_claim = draft_line[1:].strip() if draft_line.startswith(":") else draft_line
+            if not draft_claim:
+                raise EvidenceBoundaryError(f"SOURCE_FACT must include claim text after the locator: {identity} @ {locator}")
+            if " ".join(draft_claim.split()).rstrip(".") not in evidence_claim.rstrip("."):
+                raise EvidenceBoundaryError(f"SOURCE_FACT content is not present at the verified Research locator: {identity} @ {locator}")
+
+    def _write_views(self, content: str, status: str, revision: int) -> None:
+        """Generate synchronized reader and research views from the one draft input."""
+        metadata = ["---", "kind: synthesis-view", "schema: 2", f"status: {status}", f"revision: {revision}", f"source: {self.draft_path.name}", "owner: Synthesis", "---", ""]
+        (self.project_root / "research-draft.md").write_text(
+            "\n".join(metadata + [content.rstrip(), ""]), encoding="utf-8"
+        )
+        reader_lines: list[str] = []
+        for line in content.splitlines():
+            line = re.sub(r"\bSOURCE_FACT\s*\[[^\]]+\]\s*:\s*", "", line)
+            line = re.sub(r"\bMODEL_SYNTHESIS\s*:\s*", "", line)
+            line = re.sub(r"\bMODEL_HYPOTHESIS\s*:\s*", "", line)
+            reader_lines.append(line)
+        (self.project_root / "reader-draft.md").write_text(
+            "\n".join(metadata[:1] + ["kind: synthesis-reader-view"] + metadata[2:] + reader_lines + [""]),
+            encoding="utf-8",
+        )
 
     def _next_revision(self) -> int:
         if not self.draft_path.exists():
