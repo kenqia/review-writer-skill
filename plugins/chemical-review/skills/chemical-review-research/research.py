@@ -32,11 +32,11 @@ SEARCH_PATHS = (
 )
 DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.I)
 _SENSITIVE_QUERY_RE = re.compile(
-    r"([?&](?:api[_-]?key|access[_-]?token|auth(?:orization)?|password|secret|token|key|sig(?:nature)?|bearer|credential|x-amz-(?:credential|signature|security-token)|x-goog-(?:credential|signature)|awsaccesskeyid)=)[^&\s]+",
+    r"([?&#;](?:api[_-]?key|access[_-]?token|auth(?:orization)?|password|secret|token|key|sig(?:nature)?|bearer|credential|x-amz-(?:credential|signature|security-token)|x-goog-(?:credential|signature)|awsaccesskeyid)(?:=|:))[^&#;\s]+",
     re.I,
 )
 _SENSITIVE_HEADER_RE = re.compile(r"(\b(?:authorization|x-api-key)\s*:\s*(?:bearer\s+)?)[^\s,;]+", re.I)
-_SENSITIVE_USERINFO_RE = re.compile(r"(\bhttps?://)(?:[^/\s:@]+(?::[^@\s/]*)?@)", re.I)
+_SENSITIVE_USERINFO_RE = re.compile(r"(\bhttps?://)[^\s/?#]+@", re.I)
 _SENSITIVE_URL_KEYS = {
     "api_key", "apikey", "access_token", "auth", "authorization", "credential",
     "key", "secret", "sig", "signature", "token", "x-api-key", "x-amz-credential", "x-amz-signature",
@@ -145,7 +145,13 @@ class _Adapter:
         for _attempt in range(self.settings.retries + 1):
             self.calls += 1
             try:
-                return self.transport.request(method, url, headers=headers or {"Accept": "application/json"}, body=body, timeout=self.settings.timeout)
+                response = self.transport.request(method, url, headers=headers or {"Accept": "application/json"}, body=body, timeout=self.settings.timeout)
+                if response.status >= 400:
+                    self.last_error = _safe_error(
+                        f"{method} {url} -> provider returned HTTP {response.status}",
+                        secrets=self._credential_values(),
+                    )
+                return response
             except Exception as exc:  # adapters expose honest degradation, never a false success
                 last = exc
                 self.last_error = _safe_error(str(exc), secrets=self._credential_values())
@@ -159,6 +165,13 @@ class _Adapter:
             and isinstance(value, str)
             and value.strip()
         )
+
+    def _json(self, response: HttpResponse) -> Mapping[str, Any]:
+        try:
+            return _json_body(response)
+        except ProviderUnavailable as exc:
+            self.last_error = _safe_error(str(exc), secrets=self._credential_values())
+            raise
 
 
 @dataclass(frozen=True)
@@ -202,7 +215,7 @@ class OpenAlexAdapter(_Adapter):
             params["api_key"] = self.api_key
         if self.mailto:
             params["mailto"] = self.mailto
-        payload = _json_body(self._request("GET", self.settings.endpoint + "?" + urlencode(params)))
+        payload = self._json(self._request("GET", self.settings.endpoint + "?" + urlencode(params)))
         values = payload.get("results", [])
         return tuple(Paper(str(row.get("id", "")), str(row.get("title", "Untitled")), str(row.get("doi", "")).replace("https://doi.org/", ""), row.get("publication_year"), provider=self.name, abstract=str(row.get("abstract_inverted_index", ""))) for row in values if isinstance(row, Mapping) and row.get("id"))
 
@@ -218,7 +231,7 @@ class SemanticScholarAdapter(_Adapter):
         headers = {"Accept": "application/json"}
         if self.api_key:
             headers["x-api-key"] = self.api_key
-        payload = _json_body(self._request("GET", self.settings.endpoint + "?" + urlencode({"query": query, "limit": min(limit, 100), "fields": "title,externalIds,year,authors,abstract"}), headers=headers))
+        payload = self._json(self._request("GET", self.settings.endpoint + "?" + urlencode({"query": query, "limit": min(limit, 100), "fields": "title,externalIds,year,authors,abstract"}), headers=headers))
         result: list[Paper] = []
         for row in payload.get("data", []):
             if not isinstance(row, Mapping) or not row.get("paperId"):
@@ -239,7 +252,7 @@ class CrossrefAdapter(_Adapter):
         params = {"query": query, "rows": min(limit, 100)}
         if self.mailto:
             params["mailto"] = self.mailto
-        payload = _json_body(self._request("GET", self.settings.endpoint + "?" + urlencode(params)))
+        payload = self._json(self._request("GET", self.settings.endpoint + "?" + urlencode(params)))
         result: list[Paper] = []
         for row in (payload.get("message") or {}).get("items", []):
             if isinstance(row, Mapping) and row.get("DOI"):
@@ -262,7 +275,7 @@ class PubChemAdapter(_Adapter):
         super().__init__(settings=settings or ProviderSettings.from_env(self.name, "https://pubchem.ncbi.nlm.nih.gov/rest/pug"), transport=transport)
 
     def expand(self, term: str) -> tuple[str, ...]:
-        payload = _json_body(self._request("GET", self.settings.endpoint.rstrip("/") + "/compound/name/" + quote(term, safe="") + "/synonyms/JSON"))
+        payload = self._json(self._request("GET", self.settings.endpoint.rstrip("/") + "/compound/name/" + quote(term, safe="") + "/synonyms/JSON"))
         values = (payload.get("InformationList") or {}).get("Information", [])
         return tuple(str(value) for row in values if isinstance(row, Mapping) for value in row.get("Synonym", []) if str(value).strip())
 
@@ -274,7 +287,7 @@ class ChebiAdapter(_Adapter):
         super().__init__(settings=settings or ProviderSettings.from_env(self.name, "https://www.ebi.ac.uk/chebi/backend/api/public/es_search/"), transport=transport)
 
     def expand(self, term: str) -> tuple[str, ...]:
-        payload = _json_body(self._request("GET", self.settings.endpoint + "?" + urlencode({"term": term})))
+        payload = self._json(self._request("GET", self.settings.endpoint + "?" + urlencode({"term": term})))
         values = payload.get("results", payload.get("data", []))
         return tuple(str(row.get("name") or row.get("chebiId")) for row in values if isinstance(row, Mapping) and (row.get("name") or row.get("chebiId")))
 
@@ -289,7 +302,7 @@ class UnpaywallAdapter(_Adapter):
     def locate(self, doi: str) -> tuple[FullTextLocation, ...]:
         if not self.email.strip():
             raise ProviderUnavailable("Unpaywall requires UNPAYWALL_EMAIL; add it to an untracked env file")
-        payload = _json_body(self._request("GET", self.settings.endpoint.rstrip("/") + "/" + quote(doi, safe="") + "?" + urlencode({"email": self.email})))
+        payload = self._json(self._request("GET", self.settings.endpoint.rstrip("/") + "/" + quote(doi, safe="") + "?" + urlencode({"email": self.email})))
         locations: list[FullTextLocation] = []
         for row in payload.get("oa_locations", []) + ([payload.get("best_oa_location")] if payload.get("best_oa_location") else []):
             if isinstance(row, Mapping) and row.get("url_for_pdf"):
@@ -304,7 +317,7 @@ class EuropePmcAdapter(_Adapter):
         super().__init__(settings=settings or ProviderSettings.from_env(self.name, "https://www.ebi.ac.uk/europepmc/webservices/rest/search"), transport=transport)
 
     def locate(self, doi: str) -> tuple[FullTextLocation, ...]:
-        payload = _json_body(self._request("GET", self.settings.endpoint + "?" + urlencode({"query": f'DOI:"{doi}"', "format": "json"})))
+        payload = self._json(self._request("GET", self.settings.endpoint + "?" + urlencode({"query": f'DOI:"{doi}"', "format": "json"})))
         result: list[FullTextLocation] = []
         for row in (payload.get("resultList") or {}).get("result", []):
             if isinstance(row, Mapping) and row.get("pmcid"):
@@ -324,7 +337,7 @@ class CoreAdapter(_Adapter):
         if not self.api_key.strip():
             raise ProviderUnavailable("CORE requires CORE_API_KEY; add it to an untracked env file")
         headers = {"Accept": "application/json", "Authorization": f"Bearer {self.api_key}"}
-        payload = _json_body(self._request("GET", self.settings.endpoint + "?" + urlencode({"q": f'doi:"{doi}"', "limit": 10}), headers=headers))
+        payload = self._json(self._request("GET", self.settings.endpoint + "?" + urlencode({"q": f'doi:"{doi}"', "limit": 10}), headers=headers))
         result: list[FullTextLocation] = []
         for row in payload.get("results", []):
             if isinstance(row, Mapping):
@@ -549,7 +562,8 @@ class ResearchStage:
             try:
                 terms.update(str(value).strip() for value in adapter.expand(topic) if str(value).strip())
             except (ProviderUnavailable, AttributeError) as exc:
-                failures.append(f"{getattr(adapter, 'name', adapter.__class__.__name__)}: {exc}")
+                credentials = adapter._credential_values() if hasattr(adapter, "_credential_values") else ()
+                failures.append(f"{getattr(adapter, 'name', adapter.__class__.__name__)}: {_safe_error(str(exc), secrets=credentials)}")
         return tuple(sorted(terms)), tuple(failures)
 
     @staticmethod
@@ -862,7 +876,13 @@ def _download_priority(paper: Paper) -> int:
 
 
 def _safe_error(value: str, *, secrets: Sequence[str] = ()) -> str:
-    redacted = _SENSITIVE_QUERY_RE.sub(r"\1[REDACTED]", value)
+    redacted = value
+    for _ in range(8):
+        decoded = unquote(redacted)
+        if decoded == redacted:
+            break
+        redacted = decoded
+    redacted = _SENSITIVE_QUERY_RE.sub(r"\1[REDACTED]", redacted)
     redacted = _SENSITIVE_HEADER_RE.sub(r"\1[REDACTED]", redacted)
     redacted = _SENSITIVE_USERINFO_RE.sub(r"\1[REDACTED]@", redacted)
     for name in ("OPENALEX_API_KEY", "SEMANTIC_SCHOLAR_API_KEY", "CORE_API_KEY", "MINERU_TOKEN"):

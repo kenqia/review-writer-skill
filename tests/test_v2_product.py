@@ -211,6 +211,38 @@ class V2ProductTests(unittest.TestCase):
         self.assertIn("[REDACTED]", direct_adapter.last_error)
         self.assertNotIn("URLSIG", research._safe_error("GET https://provider.invalid/paper.pdf?X-Amz-Signature=URLSIG"))
         self.assertNotIn("URLUSER", research._safe_error("GET https://URLUSER:URLPASS@provider.invalid/paper.pdf"))
+        self.assertNotIn("ENCUSERPASS", research._safe_error("GET https://user%40name:ENCUSERPASS@provider.invalid/paper.pdf"))
+        self.assertNotIn("NESTEDSIG", research._safe_error("GET https://provider.invalid/redirect?next=https%3A%2F%2Fpublisher.example%2Fpaper.pdf%3Fsig%3DNESTEDSIG"))
+        self.assertNotIn("DOUBLEENCODED", research._safe_error("GET https://provider.invalid/redirect?next=https%253A%252F%252Fpublisher.example%252Fpaper.pdf%253Fsig%253DDOUBLEENCODED"))
+        self.assertNotIn("ENCUSER", research._safe_error("GET https%3A%2F%2FENCUSER%3AENCPASS%40provider.invalid%2Fpaper.pdf"))
+        self.assertNotIn("HTTPSECRET", research._safe_error("GET https://provider.invalid/paper.pdf?download=1;sig=HTTPSECRET"))
+
+        class HttpErrorTransport:
+            def request(self, method, url, *, headers, body=None, timeout):
+                return research.HttpResponse(503, {"content-type": "application/json"}, {"error": "temporary"})
+
+        http_adapter = research.OpenAlexAdapter(transport=HttpErrorTransport())
+        with self.assertRaises(research.ProviderUnavailable):
+            http_adapter.search("a", limit=1)
+        self.assertIn("HTTP 503", http_adapter.last_error)
+
+        class MalformedTransport:
+            def request(self, method, url, *, headers, body=None, timeout):
+                return research.HttpResponse(200, {"content-type": "application/json"}, b"not-json")
+
+        malformed_adapter = research.OpenAlexAdapter(transport=MalformedTransport())
+        with self.assertRaises(research.ProviderUnavailable):
+            malformed_adapter.search("a", limit=1)
+        self.assertIn("malformed JSON", malformed_adapter.last_error)
+
+        class FailingEntity:
+            name = "Fixture entity"
+
+            def expand(self, term):
+                raise research.ProviderUnavailable("GET https://entity.invalid?token=ENTITYSECRET")
+
+        _, entity_failures = research.ResearchStage._expand_entities("## Topic\nEntity test\n", (FailingEntity(),))
+        self.assertNotIn("ENTITYSECRET", " ".join(entity_failures))
         self.assertEqual(
             research._persisted_url("https://oa.example/paper.pdf?access_token=URLSECRET&download=1"),
             "",
@@ -225,6 +257,14 @@ class V2ProductTests(unittest.TestCase):
         )
         self.assertEqual(
             research._persisted_url("https://oa.example/paper.pdf?bearer=URLSECRET"),
+            "",
+        )
+        self.assertEqual(
+            research._persisted_url("https://oa.example/paper.pdf?download=1;sig=URLSECRET"),
+            "",
+        )
+        self.assertEqual(
+            research._persisted_url("https://oa.example/paper.pdf#sig:URLSECRET"),
             "",
         )
         self.assertEqual(

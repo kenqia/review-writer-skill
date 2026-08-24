@@ -6,7 +6,7 @@ This report keeps engineering evidence, product use, and scientific acceptance s
 
 | Boundary | Result | Evidence / limitation |
 | --- | --- | --- |
-| Engineering | PASS | 22 black-box/unit contract tests, `ruff`, `compileall`, package boundary checks, and deterministic build pass on the current branch. |
+| Engineering | PASS | 23 black-box/unit contract tests, `ruff`, `compileall`, package boundary checks, and deterministic build pass on the current branch. |
 | PUBLIC_E2E | PASS (fixture-backed) | Fresh temporary project exercises Intent → Research wait → authorized PDF resume → Synthesis → four-role QA. Provider network is injected by fixture/transport seams. |
 | Installed-copy smoke | PASS | Local marketplace install and cold Intent invocation pass with a temporary `CODEX_HOME`. |
 | Product Use | NOT_CLAIMED | No researcher topic, provider credentials, or legally downloaded reference PDF was supplied for a real scientific review in this engineering run. |

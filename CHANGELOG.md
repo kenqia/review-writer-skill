@@ -14,6 +14,8 @@
 - Withhold credential-bearing signed full-text URLs from Research Markdown and
   cache while preserving an explicit `WITHHELD_CREDENTIAL_BEARING_URL`
   degradation and recovery action for a fresh legal route.
+- Record HTTP and malformed-response provider degradation through the same
+  redacted status path, including entity-expansion failures.
 
 ## 0.2.0-beta.1 — v2 implementation candidate
 
