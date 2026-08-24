@@ -209,6 +209,8 @@ class V2ProductTests(unittest.TestCase):
             direct_adapter.locate("10.1/x")
         self.assertNotIn("DIRECTSECRET", direct_adapter.last_error)
         self.assertIn("[REDACTED]", direct_adapter.last_error)
+        self.assertNotIn("URLSIG", research._safe_error("GET https://provider.invalid/paper.pdf?X-Amz-Signature=URLSIG"))
+        self.assertNotIn("URLUSER", research._safe_error("GET https://URLUSER:URLPASS@provider.invalid/paper.pdf"))
         self.assertEqual(
             research._persisted_url("https://oa.example/paper.pdf?access_token=URLSECRET&download=1"),
             "",
@@ -219,6 +221,14 @@ class V2ProductTests(unittest.TestCase):
         )
         self.assertEqual(
             research._persisted_url("https://user:URLSECRET@oa.example/paper.pdf"),
+            "",
+        )
+        self.assertEqual(
+            research._persisted_url("https://oa.example/paper.pdf?bearer=URLSECRET"),
+            "",
+        )
+        self.assertEqual(
+            research._persisted_url("https://oa.example/redirect?next=https%3A%2F%2Fpublisher.example%2Fpaper.pdf%3Ftoken%3DURLSECRET"),
             "",
         )
         self.assertEqual(
@@ -370,6 +380,47 @@ class V2ProductTests(unittest.TestCase):
             registry = (project / "research" / "source-registry.md").read_text(encoding="utf-8")
             self.assertIn("https://oa.example/core.pdf", registry)
             self.assertEqual(len(list((project / "research" / "fulltext").glob("*.pdf"))), 1)
+
+    def test_credential_bearing_direct_open_access_url_is_not_requested_or_persisted(self):
+        research = load_module("v2_direct_signed_url", V2_SKILLS["chemical-review-research"] / "research.py")
+
+        class FailingDownloadTransport:
+            def __init__(self):
+                self.urls = []
+
+            def request(self, method, url, *, headers, body=None, timeout):
+                self.urls.append(url)
+                raise AssertionError("credential-bearing URL must not reach the download transport")
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "review-brief.md").write_text("---\nconfirmed: true\n---\n\n## Topic\nDirect signed route\n", encoding="utf-8")
+            fixture_dir = project / "fixtures"
+            fixture_dir.mkdir()
+            (fixture_dir / "research.json").write_text(json.dumps({"papers": [{
+                "identifier": "doi:10.1234/direct-signed",
+                "doi": "10.1234/direct-signed",
+                "title": "Direct signed route",
+                "full_text_url": "https://publisher.example/paper.pdf?bearer=URLSECRET",
+                "full_text_direct": True,
+                "access_basis": "OPEN_ACCESS",
+                "priority": "CORE",
+                "claim_relevance": "The core endpoint depends on this paper.",
+            }]}), encoding="utf-8")
+            transport = FailingDownloadTransport()
+            result = research.ResearchStage(project).run(
+                fixture_dir=fixture_dir,
+                adapters=(),
+                entity_adapters=(),
+                full_text_adapters=(),
+                download_transport=transport,
+            )
+            self.assertEqual(result.status, "WAITING_FOR_USER")
+            self.assertEqual(transport.urls, [])
+            output = "".join((project / "research" / name).read_text(encoding="utf-8") for name in ("download-requests.md", "research-handoff.md", "source-registry.md"))
+            self.assertIn("WITHHELD_CREDENTIAL_BEARING_URL", output)
+            self.assertIn("fresh legal landing/download URL without embedded credentials", output)
+            self.assertNotIn("URLSECRET", output)
 
     def test_direct_download_failure_returns_a_user_route_and_rejects_html(self):
         research = load_module("v2_download_failure", V2_SKILLS["chemical-review-research"] / "research.py")

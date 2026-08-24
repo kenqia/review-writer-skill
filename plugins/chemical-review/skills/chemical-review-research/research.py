@@ -20,7 +20,7 @@ import shutil
 import subprocess
 from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 
@@ -32,14 +32,16 @@ SEARCH_PATHS = (
 )
 DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.I)
 _SENSITIVE_QUERY_RE = re.compile(
-    r"([?&](?:api[_-]?key|access[_-]?token|auth(?:orization)?|password|secret|token|key)=)[^&\s]+",
+    r"([?&](?:api[_-]?key|access[_-]?token|auth(?:orization)?|password|secret|token|key|sig(?:nature)?|bearer|credential|x-amz-(?:credential|signature|security-token)|x-goog-(?:credential|signature)|awsaccesskeyid)=)[^&\s]+",
     re.I,
 )
 _SENSITIVE_HEADER_RE = re.compile(r"(\b(?:authorization|x-api-key)\s*:\s*(?:bearer\s+)?)[^\s,;]+", re.I)
+_SENSITIVE_USERINFO_RE = re.compile(r"(\bhttps?://)(?:[^/\s:@]+(?::[^@\s/]*)?@)", re.I)
 _SENSITIVE_URL_KEYS = {
     "api_key", "apikey", "access_token", "auth", "authorization", "credential",
     "key", "secret", "sig", "signature", "token", "x-api-key", "x-amz-credential", "x-amz-signature",
     "x-amz-security-token", "x-goog-credential", "x-goog-signature", "awsaccesskeyid",
+    "bearer",
 }
 
 
@@ -436,6 +438,7 @@ class ResearchStage:
         parsed_fixture = fixture.get("parsed", {}) if isinstance(fixture, Mapping) else {}
         for paper in papers:
             record = records[paper.identifier]
+            safe_full_text_url = _persisted_url(paper.full_text_url)
             inbox_pdf = self._find_inbox_pdf(paper)
             if inbox_pdf is not None:
                 record["local_path"] = str(inbox_pdf)
@@ -450,10 +453,10 @@ class ResearchStage:
                 except ProviderUnavailable as exc:
                     research_gap = True
                     record.update({"full_text": "FOUND", "parser": "UNPARSED", "failure": _safe_error(str(exc))})
-            elif paper.full_text_url and paper.full_text_direct and paper.access_basis == "OPEN_ACCESS":
+            elif safe_full_text_url and paper.full_text_direct and paper.access_basis == "OPEN_ACCESS":
                 target = self.root / "fulltext" / (_source_id(paper.identifier) + ".pdf")
                 try:
-                    self._download(paper.full_text_url, target, transport=download_transport)
+                    self._download(safe_full_text_url, target, transport=download_transport)
                     record.update({"local_path": str(target), "digest": _digest(target), "full_text": "FOUND", "access_basis": "OPEN_ACCESS", "downloaded_at": _now()})
                     parsed = self._parse(target, paper.identifier, parsed_fixture.get(paper.identifier))
                     record.update({"parser": parsed[2], "locators": list(parsed[1]), "failure": parsed[3]})
@@ -861,6 +864,7 @@ def _download_priority(paper: Paper) -> int:
 def _safe_error(value: str, *, secrets: Sequence[str] = ()) -> str:
     redacted = _SENSITIVE_QUERY_RE.sub(r"\1[REDACTED]", value)
     redacted = _SENSITIVE_HEADER_RE.sub(r"\1[REDACTED]", redacted)
+    redacted = _SENSITIVE_USERINFO_RE.sub(r"\1[REDACTED]@", redacted)
     for name in ("OPENALEX_API_KEY", "SEMANTIC_SCHOLAR_API_KEY", "CORE_API_KEY", "MINERU_TOKEN"):
         secret = os.environ.get(name, "").strip()
         if secret:
@@ -877,12 +881,9 @@ def _persisted_url(value: str) -> str:
     try:
         parsed = urlsplit(value)
         query = parse_qsl(parsed.query, keep_blank_values=True)
-        fragment = parse_qsl(parsed.fragment.lstrip("?#"), keep_blank_values=True)
     except ValueError:
         return ""
-    if parsed.username or parsed.password:
-        return ""
-    if any(_sensitive_url_key(key) for key, _ in (*query, *fragment)):
+    if parsed.username or parsed.password or _url_contains_credentials(value):
         return ""
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
 
@@ -901,6 +902,28 @@ def _sensitive_url_key(key: str) -> bool:
         marker in normalized
         for marker in ("token", "signature", "credential", "secret", "accesskey", "api_key", "apikey", "authorization")
     )
+
+
+def _url_contains_credentials(value: str, *, depth: int = 0) -> bool:
+    """Detect credential parameters in a URL or an encoded nested redirect URL."""
+    if depth > 3:
+        # Unknown-depth nested URLs are withheld rather than risk persisting a
+        # credential hidden behind another redirect/encoding layer.
+        return True
+    decoded = unquote(value)
+    if _SENSITIVE_QUERY_RE.search(decoded) or _SENSITIVE_HEADER_RE.search(decoded):
+        return True
+    try:
+        parsed = urlsplit(decoded)
+    except ValueError:
+        return True
+    if parsed.username or parsed.password:
+        return True
+    for component in (parsed.query, parsed.fragment.lstrip("?#")):
+        for key, nested in parse_qsl(component, keep_blank_values=True):
+            if _sensitive_url_key(key) or _url_contains_credentials(nested, depth=depth + 1):
+                return True
+    return False
 
 
 def _load_env_file(path: Path) -> None:
