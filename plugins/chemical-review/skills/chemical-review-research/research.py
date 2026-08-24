@@ -136,6 +136,17 @@ def _json_body(response: HttpResponse) -> Mapping[str, Any]:
     return value
 
 
+def _openalex_abstract(value: object) -> str:
+    """Reconstruct OpenAlex's inverted-index abstract deterministically."""
+    if not isinstance(value, Mapping):
+        return str(value or "")
+    words: list[tuple[int, str]] = []
+    for token, positions in value.items():
+        if isinstance(positions, (list, tuple)):
+            words.extend((int(position), str(token)) for position in positions if isinstance(position, int))
+    return " ".join(token for _position, token in sorted(words))
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -266,7 +277,19 @@ class OpenAlexAdapter(_Adapter):
             params["mailto"] = self.mailto
         payload = self._json(self._request("GET", self.settings.endpoint + "?" + urlencode(params)))
         values = payload.get("results", [])
-        result = tuple(Paper(str(row.get("id", "")), str(row.get("title", "Untitled")), str(row.get("doi", "")).replace("https://doi.org/", ""), row.get("publication_year"), provider=self.name, abstract=str(row.get("abstract_inverted_index", "")), publication_type=str(row.get("type") or "journal-article")) for row in values if isinstance(row, Mapping) and row.get("id"))
+        result = tuple(
+            Paper(
+                str(row.get("id", "")),
+                str(row.get("title", "Untitled")),
+                str(row.get("doi", "")).replace("https://doi.org/", ""),
+                row.get("publication_year"),
+                provider=self.name,
+                abstract=_openalex_abstract(row.get("abstract_inverted_index")),
+                publication_type=str(row.get("type") or "journal-article"),
+            )
+            for row in values
+            if isinstance(row, Mapping) and row.get("id")
+        )
         self._mark_results(len(result))
         return result
 
@@ -365,8 +388,13 @@ class UnpaywallAdapter(_Adapter):
         payload = self._json(self._request("GET", self.settings.endpoint.rstrip("/") + "/" + quote(doi, safe="") + "?" + urlencode({"email": self.email})))
         locations: list[FullTextLocation] = []
         for row in payload.get("oa_locations", []) + ([payload.get("best_oa_location")] if payload.get("best_oa_location") else []):
-            if isinstance(row, Mapping) and row.get("url_for_pdf"):
-                locations.append(FullTextLocation("doi:" + doi.lower(), str(row["url_for_pdf"]), "OPEN_ACCESS", self.name, True))
+            if not isinstance(row, Mapping):
+                continue
+            url = row.get("url_for_pdf") or row.get("url_for_landing_page")
+            if url:
+                direct = bool(row.get("url_for_pdf"))
+                note = "" if direct else "legal OA landing page; direct PDF resolution may require a later route"
+                locations.append(FullTextLocation("doi:" + doi.lower(), str(url), "OPEN_ACCESS", self.name, direct, note))
         result = tuple(dict.fromkeys(locations))
         self._mark_results(len(result))
         return result
@@ -548,18 +576,24 @@ class ResearchStage:
         for paper in papers:
             for row in candidate_records:
                 if row.get("identifier") == paper.identifier:
-                    row.update({"full_text_url": _persisted_url(paper.full_text_url), "full_text_url_status": _url_status(paper.full_text_url), "access_basis": paper.access_basis, "full_text_direct": paper.full_text_direct})
+                    row.update({"provider": paper.provider, "full_text_url": _persisted_url(paper.full_text_url), "full_text_url_status": _url_status(paper.full_text_url), "access_basis": paper.access_basis, "full_text_direct": paper.full_text_direct})
         candidate_by_id = {row["identifier"]: row for row in candidate_records}
         existing_manifest = self._load_manifest()
         current_ids = set(candidate_by_id)
         current_candidate_digest = _candidate_digest(candidate_records)
         if existing_manifest and int(existing_manifest.get("brief_revision", -1)) == _brief_revision(brief) and existing_manifest.get("candidate_digest") == current_candidate_digest:
-            records = {key: value for key, value in self._load_records().items() if key in current_ids}
+            records = {
+                str(source.get("identifier")): dict(source)
+                for source in existing_manifest.get("sources", ())
+                if isinstance(source, Mapping) and str(source.get("identifier", "")) in current_ids
+            }
         else:
             records = {}
         for paper in papers:
             previous = records.get(paper.identifier, {})
-            records[paper.identifier] = {**previous, **asdict(paper), "source_id": _source_id(paper.identifier), "full_text_url_status": _url_status(paper.full_text_url), "local_path": previous.get("local_path", ""), "digest": previous.get("digest", ""), "parser": previous.get("parser", ""), "parser_attempted": previous.get("parser_attempted", False), "locators": previous.get("locators", []), "full_text": previous.get("full_text", "UNKNOWN"), "failure": previous.get("failure", ""), "screening": candidate_by_id.get(paper.identifier, {}).get("screening", {})}
+            paper_values = asdict(paper)
+            paper_values["full_text_url"] = _persisted_url(paper.full_text_url)
+            records[paper.identifier] = {**previous, **paper_values, "source_id": _source_id(paper.identifier), "full_text_url_status": _url_status(paper.full_text_url), "local_path": previous.get("local_path", ""), "digest": previous.get("digest", ""), "parser": previous.get("parser", ""), "parser_attempted": previous.get("parser_attempted", False), "locators": previous.get("locators", []), "full_text": previous.get("full_text", "UNKNOWN"), "failure": previous.get("failure", ""), "screening": candidate_by_id.get(paper.identifier, {}).get("screening", {})}
         requests: list[dict[str, str]] = []
         pending_requests: list[dict[str, str]] = []
         research_gap = False
@@ -577,14 +611,14 @@ class ResearchStage:
                 try:
                     record["parser_attempted"] = True
                     parsed = self._parse(inbox_pdf, paper.identifier, parsed_fixture.get(paper.identifier))
-                    record.update({"parser": parsed[2], "locators": list(parsed[1]), "full_text": "FOUND", "failure": parsed[3], "evidence_fields": self._extract_evidence_fields(brief, parsed[0], parsed[1])})
+                    record.update({"parser": parsed[2], "locators": list(parsed[1]), "full_text": "FOUND", "failure": parsed[3], "failure_kind": _parser_failure_kind(parsed[2], parsed[3]), "evidence_fields": self._extract_evidence_fields(brief, parsed[0], parsed[1])})
                     self._append_evidence(paper, parsed[0], parsed[1], parsed[2], parsed[3])
                     parsed_count += 1
                     if str(parsed[2]).lower() == "pdftotext":
                         research_gap = True
                 except ProviderUnavailable as exc:
                     research_gap = True
-                    record.update({"full_text": "FOUND", "parser": "UNPARSED", "failure": _safe_error(str(exc))})
+                    record.update({"full_text": "FOUND", "parser": "UNPARSED", "failure": _safe_error(str(exc)), "failure_kind": _parser_failure_kind("UNPARSED", str(exc))})
             elif safe_full_text_url and paper.full_text_direct and paper.access_basis == "OPEN_ACCESS":
                 target = self.root / "fulltext" / (_source_id(paper.identifier) + ".pdf")
                 try:
@@ -592,7 +626,7 @@ class ResearchStage:
                     record.update({"local_path": str(target), "digest": _digest(target), "full_text": "FOUND", "access_basis": "OPEN_ACCESS", "downloaded_at": _now()})
                     record["parser_attempted"] = True
                     parsed = self._parse(target, paper.identifier, parsed_fixture.get(paper.identifier))
-                    record.update({"parser": parsed[2], "locators": list(parsed[1]), "failure": parsed[3], "evidence_fields": self._extract_evidence_fields(brief, parsed[0], parsed[1])})
+                    record.update({"parser": parsed[2], "locators": list(parsed[1]), "failure": parsed[3], "failure_kind": _parser_failure_kind(parsed[2], parsed[3]), "evidence_fields": self._extract_evidence_fields(brief, parsed[0], parsed[1])})
                     self._append_evidence(paper, parsed[0], parsed[1], parsed[2], parsed[3])
                     parsed_count += 1
                     if str(parsed[2]).lower() == "pdftotext":
@@ -600,14 +634,14 @@ class ResearchStage:
                 except ProviderUnavailable as exc:
                     failure = _safe_error(str(exc))
                     research_gap = True
-                    record.update({"full_text": "WAITING_FOR_USER", "failure": failure})
+                    record.update({"full_text": "WAITING_FOR_USER", "failure": failure, "failure_kind": "DOWNLOAD_FAILURE"})
                     if paper.full_text_url:
                         pending_requests.append(self._download_request(paper, record, reason=failure))
                     else:
                         research_gap = True
             else:
                 failure = "legal user download required" if paper.full_text_url else "no legal full-text URL was located"
-                record.update({"full_text": "WAITING_FOR_USER" if paper.full_text_url else "MISSING", "failure": failure})
+                record.update({"full_text": "WAITING_FOR_USER" if paper.full_text_url else "MISSING", "failure": failure, "failure_kind": "FULL_TEXT_GAP"})
                 if paper.full_text_url:
                     pending_requests.append(self._download_request(paper, record, reason=failure))
                 else:
@@ -650,6 +684,12 @@ class ResearchStage:
         self.inbox.mkdir(parents=True, exist_ok=True)
         for path in (self.root / "fulltext", self.root / "source-records", self.root / "history"):
             path.mkdir(parents=True, exist_ok=True)
+        # These are generated projections owned by Research. Remove only the
+        # stale binding notice; authorized PDFs and user-authored files remain
+        # untouched and are re-evaluated during this run.
+        binding_requests = self.root / "binding-requests.md"
+        if binding_requests.is_file() and not binding_requests.is_symlink():
+            binding_requests.unlink()
 
     def _configuration_preflight(self, choice: str | None) -> None:
         discovery = _configured_discovery_adapters()
@@ -668,7 +708,7 @@ class ResearchStage:
         elif choice == "pause":
             decision = "PAUSED"
         elif choice == "accept_degraded" or (choice is None and previous == "ACCEPT_DEGRADED"):
-            decision = "ACCEPT_DEGRADED"
+            decision = "ACCEPT_DEGRADED" if not missing else "PENDING"
         elif choice == "configure_and_continue":
             decision = "PENDING"
         else:
@@ -743,7 +783,7 @@ class ResearchStage:
                 values = tuple(adapter.search("chemical literature", limit=1))
                 reachable += 1
                 usable += bool(values)
-            except (ProviderUnavailable, AttributeError) as exc:
+            except Exception as exc:
                 errors.append(f"{getattr(adapter, 'name', adapter.__class__.__name__)}: {_safe_error(str(exc))}")
         if usable:
             return "USABLE_RESULTS", "At least one configured metadata provider returned a usable result."
@@ -811,7 +851,7 @@ class ResearchStage:
         query_base = " ".join(query_terms[:6]).strip() or "chemical literature"
         if adapters is None:
             adapters = _configured_discovery_adapters()
-        found: dict[str, Paper] = {}
+        found: list[Paper] = []
         raw_hits = 0
         coverage: dict[str, list[str]] = {}
         provenance: dict[str, set[str]] = {}
@@ -826,12 +866,11 @@ class ResearchStage:
                         if not paper.claim_relevance:
                             paper = replace(paper, claim_relevance=_candidate_claim_relevance(core_claims, path))
                         paper = replace(paper, query_family=path)
-                        key = paper.doi.lower() if paper.doi else paper.identifier.lower()
-                        found.setdefault(key, paper)
-                except (ProviderUnavailable, AttributeError):
+                        found.append(paper)
+                except Exception:
                     continue
         self._discovery_stats = {"raw_hits": raw_hits, "provider_query_coverage": coverage, "provider_provenance": {key: sorted(values) for key, values in provenance.items()}}
-        return list(found.values())
+        return found
 
     def _screen_candidates(self, brief: str, papers: Sequence[Paper]) -> tuple[list[Paper], list[dict[str, Any]]]:
         """Normalize versions and apply deterministic metadata screening before routing."""
@@ -857,15 +896,27 @@ class ResearchStage:
         relevant: list[Paper] = []
         for key, paper in sorted(unique.items(), key=lambda item: (_source_id(item[1].identifier), item[1].title.lower())):
             decision, role, reason, review_relevant = _screen_paper(brief, paper)
+            screening_fields = _screening_fields(brief, paper)
             row = {
                 "candidate_id": _source_id(paper.identifier),
                 "identifier": paper.identifier,
                 "doi": paper.doi,
                 "title": paper.title,
                 "year": paper.year,
+                "provider": paper.provider,
+                "abstract": paper.abstract,
+                "version": paper.version,
+                "query_family": paper.query_family,
+                "full_text_url": _persisted_url(paper.full_text_url),
+                "full_text_url_status": _url_status(paper.full_text_url),
+                "access_basis": paper.access_basis,
+                "full_text_direct": paper.full_text_direct,
+                "priority": paper.priority,
+                "claim_relevance": paper.claim_relevance,
+                "non_substitutability": paper.non_substitutability,
                 "publication_type": paper.publication_type,
                 "providers": sorted(provenance.get(key, set())),
-                "screening": {"decision": decision, "reason": reason, "review_relevant": review_relevant, "evidence_role": role, "confidence": "HIGH" if decision != "MAYBE" else "MEDIUM"},
+                "screening": {**screening_fields, "decision": decision, "reason": reason, "review_relevant": review_relevant, "evidence_role": role, "confidence": "HIGH" if decision != "MAYBE" else "MEDIUM"},
                 "source_id": _source_id(paper.identifier),
             }
             rows.append(row)
@@ -885,7 +936,7 @@ class ResearchStage:
             for adapter in adapters:
                 try:
                     terms.update(str(value).strip() for value in adapter.expand(term) if str(value).strip())
-                except (ProviderUnavailable, AttributeError) as exc:
+                except Exception as exc:
                     credentials = adapter._credential_values() if hasattr(adapter, "_credential_values") else ()
                     failures.append(f"{getattr(adapter, 'name', adapter.__class__.__name__)} ({term}): {_safe_error(str(exc), secrets=credentials)}")
         return tuple(sorted(terms)), tuple(failures)
@@ -902,7 +953,7 @@ class ResearchStage:
             for adapter in adapters:
                 try:
                     locations = adapter.locate(paper.doi)
-                except (ProviderUnavailable, AttributeError):
+                except Exception:
                     continue
                 if locations:
                     location = locations[0]
@@ -919,7 +970,7 @@ class ResearchStage:
             for line in path.read_text(encoding="utf-8").splitlines():
                 if ": " in line:
                     key, value = line.split(": ", 1)
-                    if key == "evidence_fields":
+                    if key in {"evidence_fields", "screening"}:
                         try:
                             parsed = json.loads(value)
                             values[key] = parsed if isinstance(parsed, dict) else {}
@@ -984,11 +1035,27 @@ class ResearchStage:
     def _write_manifest_file(self, manifest: Mapping[str, Any]) -> None:
         path = self.root / "manifest.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        safe_manifest = dict(manifest)
+        safe_manifest["candidates"] = []
+        for row in manifest.get("candidates", ()):
+            if not isinstance(row, Mapping):
+                continue
+            candidate = dict(row)
+            if "full_text_url" in candidate:
+                candidate["full_text_url"] = _persisted_url(str(candidate.get("full_text_url", "")))
+            safe_manifest["candidates"].append(candidate)
+        safe_manifest["sources"] = [
+            self._manifest_source(source)
+            for source in manifest.get("sources", ())
+            if isinstance(source, Mapping)
+        ]
+        path.write_text(json.dumps(safe_manifest, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
 
     @staticmethod
     def _manifest_source(record: Mapping[str, Any]) -> dict[str, Any]:
         source = dict(record)
+        if "full_text_url" in source:
+            source["full_text_url"] = _persisted_url(str(source.get("full_text_url", "")))
         for key in ("local_path",):
             if key in source and source[key]:
                 source[key] = str(source[key])
@@ -1001,15 +1068,21 @@ class ResearchStage:
         downloaded = [record for record in records.values() if record.get("full_text") == "FOUND" and record.get("digest")]
         mineru_success = [record for record in downloaded if str(record.get("parser", "")).lower().startswith("mineru")]
         fallback = [record for record in downloaded if str(record.get("parser", "")).lower() == "pdftotext"]
-        unparsed = [record for record in records.values() if record.get("parser") in {"UNPARSED", ""} and record.get("full_text") in {"FOUND", "WAITING_FOR_USER"}]
+        unparsed = [record for record in records.values() if record.get("parser") == "UNPARSED" or (record.get("parser_attempted") and not record.get("parser") and record.get("full_text") == "FOUND")]
         evidence_ready = [record for record in downloaded if record.get("evidence_fields") and record.get("parser") and str(record.get("parser")).lower() not in {"unparsed", "pdftotext"}]
+        relevant_ids = {
+            str(row.get("identifier"))
+            for row in relevant
+            if row.get("identifier")
+        }
+        relevant_pdfs = [record for record in downloaded if str(record.get("identifier")) in relevant_ids]
         return {
             "raw_hits": int(self._discovery_stats.get("raw_hits", len(candidates))),
             "unique_candidates": int(self._discovery_stats.get("unique_candidates", len(candidates))),
             "included": decisions.count("INCLUDE"), "excluded": decisions.count("EXCLUDE"), "maybe": decisions.count("MAYBE"),
             "relevant_candidates": len(relevant), "primary_evidence": sum(1 for row in candidates if row.get("screening", {}).get("evidence_role") == "primary" and row.get("screening", {}).get("decision") == "INCLUDE"),
-            "relevant_pdfs": len(relevant), "downloaded_pdfs": len(downloaded), "parser_attempts": sum(1 for record in records.values() if record.get("parser_attempted")), "manual_queue": len(requests),
-            "mineru_success": len(mineru_success), "mineru_failure": sum(1 for record in records.values() if record.get("failure", "") and "MinerU" in str(record.get("failure"))),
+            "relevant_pdfs": len(relevant_pdfs), "downloaded_pdfs": len(downloaded), "parser_attempts": sum(1 for record in records.values() if record.get("parser_attempted")), "manual_queue": len(requests),
+            "mineru_success": len(mineru_success), "mineru_failure": sum(1 for record in records.values() if record.get("failure_kind") == "MINERU_FAILURE"),
             "fallback_pdftotext": len(fallback), "unparsed": len(unparsed), "evidence_ready": len(evidence_ready),
             "gaps": len(requests) + len([record for record in records.values() if record.get("full_text") == "MISSING" or record.get("parser") == "UNPARSED"]) + int(bool(research_gap and not requests and not any(record.get("full_text") == "MISSING" or record.get("parser") == "UNPARSED" for record in records.values()))),
         }
@@ -1030,10 +1103,10 @@ class ResearchStage:
         }
 
     @staticmethod
-    def _extract_evidence_fields(brief: str, sections: Sequence[str], locators: Sequence[str]) -> dict[str, str]:
+    def _extract_evidence_fields(brief: str, sections: Sequence[str], locators: Sequence[str]) -> dict[str, Any]:
         text = " ".join(" ".join(str(section).replace("\n", " ").split()) for section in sections)
         fields = _review_specific_fields(brief)
-        values: dict[str, str] = {field: "UNKNOWN" for field in fields}
+        values: dict[str, Any] = {field: "UNKNOWN" for field in fields}
         spine = {field: "UNKNOWN" for field in ("system", "method", "conditions", "comparator", "endpoint", "units", "replicates", "uncertainty")}
         patterns = {
             "candidate_denominator": r"(?i)(\d+)\s+(?:attempted|generated|candidate)\s+molecules?",
@@ -1046,12 +1119,25 @@ class ResearchStage:
             "generation_task": r"(?i)(generation[^.;]*)",
             "closed_loop_feedback": r"(?i)(closed[- ]loop[^.;]*)",
         }
+        patterns.update({
+            "system": r"(?i)(?:\b(?:chemical|reaction|catalyst|molecular)\s+system|\bsystem)\s*[:=]\s*([^.;]+)",
+            "method": r"(?i)(?:\b(?:method|model|approach|strategy))\s*[:=]\s*([^.;]+)",
+            "conditions": r"(?i)(?:\b(?:reaction|experimental|operating)\s+conditions|\bconditions)\s*[:=]\s*([^.;]+)",
+            "comparator": r"(?i)(?:\b(?:comparator|comparison|control)|\b(?:versus|vs\.?))\s*[:=]?\s*([^.;]+)",
+            "endpoint": r"(?i)(?:\b(?:assay\s+)?endpoint|\boutcome)\s*[:=]\s*([^.;]+)",
+            "units": r"(?i)\bunits?\s*[:=]\s*([^.;]+)",
+            "replicates": r"(?i)\b(?:replicates?|repeats?)\s*[:=]\s*([^.;]+)",
+            "uncertainty": r"(?i)\b(?:uncertainty|error|standard\s+deviation|confidence\s+interval)\s*[:=]\s*([^.;]+)",
+        })
         for field, pattern in patterns.items():
             if field in values or field in spine:
                 match = re.search(pattern, text)
                 if match:
                     (values if field in values else spine)[field] = " ".join(match.group(1).split())[:500]
-        values.update({"evidence_level": "EXCERPT", "evidence_label": "SOURCE_EXCERPT", "locators": ";".join(str(locator) for locator in locators) or "UNKNOWN", "study_object": text[:500] or "UNKNOWN", "model_or_method": spine["method"], "data_or_training_source": "UNKNOWN", "synthesis_or_assay_evidence": values.get("identity_confirmation", "UNKNOWN"), "comparator": spine["comparator"], "endpoint": spine["endpoint"] if spine["endpoint"] != "UNKNOWN" else values.get("assay_endpoint", "UNKNOWN"), "key_result": values.get("key_result", "UNKNOWN"), "limitation": values.get("limitation", "UNKNOWN")})
+        for field in ("comparator", "endpoint"):
+            if spine[field] == "UNKNOWN" and values.get(field, "UNKNOWN") != "UNKNOWN":
+                spine[field] = values[field]
+        values.update({"evidence_level": "EXCERPT", "evidence_label": "SOURCE_EXCERPT", "locators": ";".join(str(locator) for locator in locators) or "UNKNOWN", "excerpts": [{"locator": str(locators[index] if index < len(locators) else f"page={index + 1}"), "text": " ".join(str(section).split())[:500]} for index, section in enumerate(sections)], "study_object": text[:500] or "UNKNOWN", "model_or_method": spine["method"], "data_or_training_source": "UNKNOWN", "synthesis_or_assay_evidence": values.get("identity_confirmation", "UNKNOWN"), "comparator": spine["comparator"], "endpoint": spine["endpoint"] if spine["endpoint"] != "UNKNOWN" else values.get("assay_endpoint", "UNKNOWN"), "key_result": values.get("key_result", "UNKNOWN"), "limitation": values.get("limitation", "UNKNOWN")})
         return {**spine, **values}
 
     def promote_evidence(self, identifier: str, *, fields: Mapping[str, str] | None = None, locators: Sequence[str] = (), verifier: str = "human") -> dict[str, Any]:
@@ -1068,19 +1154,13 @@ class ResearchStage:
             source["evidence_fields"] = evidence
             source["locators"] = list(locators)
             manifest.setdefault("evidence_matrix", {}).setdefault("evidence_levels", {})[str(source.get("source_id"))] = "VERIFIED"
-            self._write_manifest_file(manifest)
             records = self._load_records()
             records[str(source.get("identifier"))] = source
+            manifest["coverage"] = self._coverage(manifest.get("candidates", ()), records, (), False)
+            self._write_manifest_file(manifest)
             self._write_records(records)
-            notes_path = self.root / "evidence-notes.md"
-            existing = notes_path.read_text(encoding="utf-8") if notes_path.is_file() else "# Evidence Notes\n\n"
-            marker = f"\n## VERIFIED {identifier}\n"
-            if marker not in existing:
-                claim = str(evidence.get("key_result") or evidence.get("study_object") or "Verified structured evidence")
-                lines = [marker.rstrip(), "", f"- Verified by: {verifier}", "- Evidence boundary: VERIFIED_SOURCE_FACT after explicit original-PDF check."]
-                for locator in locators:
-                    lines.append(f"- VERIFIED_SOURCE_FACT [{identifier} @ {locator}]: {claim}")
-                notes_path.write_text(existing.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
+            self._write_evidence_notes_from_manifest(manifest)
+            self._write_evidence_matrix_projection(manifest, records)
             return source
         raise KeyError(f"source not found in current manifest: {identifier}")
 
@@ -1120,16 +1200,23 @@ class ResearchStage:
         (self.root / "provider-status.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _write_records(self, records: Mapping[str, Mapping[str, Any]]) -> None:
+        active_paths: set[Path] = set()
         for paper_id, record in records.items():
             path = self.root / "source-records" / (str(record.get("source_id") or _source_id(paper_id)) + ".md")
+            active_paths.add(path.resolve())
             values = dict(record)
             lines = ["---", "kind: research-source", "schema: 2", "---", "", f"# {values.get('title', paper_id)}", ""]
-            for key in ("source_id", "identifier", "doi", "title", "year", "provider", "publication_type", "version", "full_text_url", "full_text_url_status", "access_basis", "priority", "claim_relevance", "non_substitutability", "local_path", "digest", "downloaded_at", "full_text", "parser", "failure"):
+            for key in ("source_id", "identifier", "doi", "title", "year", "provider", "publication_type", "version", "full_text_url", "full_text_url_status", "access_basis", "priority", "claim_relevance", "non_substitutability", "local_path", "digest", "downloaded_at", "full_text", "parser", "failure", "failure_kind"):
                 value = _persisted_url(str(values.get(key, ""))) if key == "full_text_url" else values.get(key, "")
                 lines.append(f"{key}: {value}")
             lines.append("locators: " + ";".join(values.get("locators", [])))
             lines.append("evidence_fields: " + json.dumps(values.get("evidence_fields", {}), ensure_ascii=False, sort_keys=True))
+            lines.append("screening: " + json.dumps(values.get("screening", {}), ensure_ascii=False, sort_keys=True))
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        records_dir = self.root / "source-records"
+        for path in records_dir.glob("*.md"):
+            if path.resolve() not in active_paths and path.is_file() and not path.is_symlink():
+                path.unlink()
         registry_lines = [
             "# Research Source Registry", "", "Research owns this registry. Original PDFs are authoritative; parser output is a locator-bound reading aid.", "",
             "| Source ID | Identity | Title | Provider | Full-text URL | URL status | Access basis | Priority | Full text | Parser | Locator(s) | Digest | Downloaded at | Claim relevance | Non-substitutability | Failure/recovery |",
@@ -1233,35 +1320,27 @@ class ResearchStage:
         }
 
     def _append_evidence(self, paper: Paper, sections: Sequence[str], locators: Sequence[str], parser: str, note: str) -> None:
-        path = self.root / "evidence-notes.md"
-        if not path.exists():
-            path.write_text("# Evidence Notes\n\nParser output is a reading aid. A SOURCE_FACT is valid only after a human/agent checks the original PDF at the locator.\n", encoding="utf-8")
-        existing = path.read_text(encoding="utf-8")
-        marker = f"\n## {paper.identifier}\n"
-        if marker in existing:
-            return
-        lines = [marker.rstrip(), "", f"- Title: {paper.title}", f"- Parser: {parser}", f"- Parser note: {note}", "- Evidence boundary: SOURCE_EXCERPT only until original PDF verification."]
-        for index, section in enumerate(sections):
-            locator = locators[index] if index < len(locators) else f"{paper.identifier}#page={index + 1}"
-            excerpt = " ".join(section.split())[:500]
-            lines.append(f"- SOURCE_EXCERPT [{paper.identifier} @ {locator}]: {excerpt}")
-        path.write_text(existing.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
+        """Compatibility hook; evidence-notes is projected from manifest after the run."""
+        return None
 
     def _write_supporting_assets(self, brief: str, papers: Sequence[Paper], records: Mapping[str, Mapping[str, Any]], requests: Sequence[Mapping[str, str]], terms: Sequence[str], entity_failures: Sequence[str], *, manifest: Mapping[str, Any] | None = None) -> None:
         manifest = manifest or self._load_manifest()
         coverage = manifest.get("coverage", {})
         provider_coverage = manifest.get("provider_query_coverage", {})
+        self._write_evidence_notes_from_manifest(manifest)
         (self.root / "search-log.md").write_text("# Search Log\n\n" + "\n".join(f"- {path}: query derived from confirmed brief and entity terms" for path in SEARCH_PATHS) + "\n\n## Coverage\n\n" + "\n".join(f"- {key}: {', '.join(value)}" for key, value in provider_coverage.items()) + f"\n\n- Raw hits: {coverage.get('raw_hits', 0)}\n- Unique candidates: {coverage.get('unique_candidates', 0)}\n", encoding="utf-8")
         (self.root / "terms-and-entities.md").write_text("# Terms and Chemistry Entities\n\n" + "\n".join(f"- {term}" for term in terms) + ("\n\n## Provider degradation\n\n" + "\n".join(f"- {failure}" for failure in entity_failures) if entity_failures else "") + "\n", encoding="utf-8")
-        (self.root / "comparability-matrix.md").write_text("# Comparability Matrix\n\n| Source | Conditions | Units | Endpoint | Comparable? | Notes |\n| --- | --- | --- | --- | --- | --- |\n" + "\n".join(f"| {record.get('source_id')} | {(record.get('evidence_fields') or {}).get('conditions', 'UNKNOWN')} | {(record.get('evidence_fields') or {}).get('units', 'UNKNOWN')} | {(record.get('evidence_fields') or {}).get('endpoint', 'UNKNOWN')} | NOT_COMPARABLE until checked | {record.get('claim_relevance', '')} |" for record in records.values()) + "\n", encoding="utf-8")
-        matrix = manifest.get("evidence_matrix", {})
-        layers = matrix.get("layers", {})
-        matrix_lines = ["# Evidence Matrix", "", "The canonical matrix is stored in manifest.json; this Markdown is a projection.", "", "## Four layers", ""]
-        for layer, fields in layers.items():
-            matrix_lines.append(f"- **{layer}**: {', '.join(str(field) for field in fields)}")
-        matrix_lines.extend(["", "## Source evidence", "", "| Source | Evidence level | Locator(s) | Key result | Limitation |", "| --- | --- | --- | --- | --- |"])
-        matrix_lines.extend(f"| {record.get('source_id')} | {(record.get('evidence_fields') or {}).get('evidence_level', 'UNKNOWN')} | {(record.get('evidence_fields') or {}).get('locators', 'UNKNOWN')} | {(record.get('evidence_fields') or {}).get('key_result', 'UNKNOWN')} | {(record.get('evidence_fields') or {}).get('limitation', 'UNKNOWN')} |" for record in records.values())
-        (self.root / "evidence-matrix.md").write_text("\n".join(matrix_lines) + "\n", encoding="utf-8")
+        comparability_rows = []
+        for record in records.values():
+            evidence = record.get("evidence_fields") or {}
+            values = (
+                record.get("source_id"), evidence.get("conditions", "UNKNOWN"),
+                evidence.get("units", "UNKNOWN"), evidence.get("endpoint", "UNKNOWN"),
+                "NOT_COMPARABLE until checked", record.get("claim_relevance", ""),
+            )
+            comparability_rows.append("| " + " | ".join(str(value or "UNKNOWN").replace("|", "\\|") for value in values) + " |")
+        (self.root / "comparability-matrix.md").write_text("# Comparability Matrix\n\n| Source | Conditions | Units | Endpoint | Comparable? | Notes |\n| --- | --- | --- | --- | --- | --- |\n" + "\n".join(comparability_rows) + "\n", encoding="utf-8")
+        self._write_evidence_matrix_projection(manifest, records)
         requested_ids = {request["identity"] for request in requests}
         unresolved = [
             record for record in records.values()
@@ -1282,10 +1361,61 @@ class ResearchStage:
             request_lines.extend([f"## {request['source_id']}", ""] + [f"- {key}: {value}" for key, value in request.items()] + [""])
         (self.root / "download-requests.md").write_text("\n".join(request_lines), encoding="utf-8")
 
+    def _write_evidence_matrix_projection(self, manifest: Mapping[str, Any], records: Mapping[str, Mapping[str, Any]]) -> None:
+        matrix = manifest.get("evidence_matrix", {})
+        layers = matrix.get("layers", {})
+        matrix_lines = ["# Evidence Matrix", "", "The canonical matrix is stored in manifest.json; this Markdown is a projection.", "", "## Four layers", ""]
+        for layer, fields in layers.items():
+            matrix_lines.append(f"- **{layer}**: {', '.join(str(field) for field in fields)}")
+        matrix_lines.extend(["", "## Source evidence", "", "| Source | Evidence level | Locator(s) | Key result | Limitation |", "| --- | --- | --- | --- | --- |"])
+        matrix_lines.extend(
+            "| " + " | ".join(
+                str(value or "UNKNOWN").replace("|", "\\|")
+                for value in (
+                    record.get("source_id"),
+                    (record.get("evidence_fields") or {}).get("evidence_level", "UNKNOWN"),
+                    (record.get("evidence_fields") or {}).get("locators", "UNKNOWN"),
+                    (record.get("evidence_fields") or {}).get("key_result", "UNKNOWN"),
+                    (record.get("evidence_fields") or {}).get("limitation", "UNKNOWN"),
+                )
+            ) + " |"
+            for record in records.values()
+        )
+        matrix_lines.extend(["", "## Chemistry comparison spine", "", "| Source | System | Method | Conditions | Comparator | Endpoint | Units | Replicates | Uncertainty |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"])
+        matrix_lines.extend(
+            "| " + " | ".join(
+                str(value or "UNKNOWN").replace("|", "\\|")
+                for value in (
+                    record.get("source_id"),
+                    *((record.get("evidence_fields") or {}).get(field, "UNKNOWN") for field in ("system", "method", "conditions", "comparator", "endpoint", "units", "replicates", "uncertainty")),
+                )
+            ) + " |"
+            for record in records.values()
+        )
+        (self.root / "evidence-matrix.md").write_text("\n".join(matrix_lines) + "\n", encoding="utf-8")
+
+    def _write_evidence_notes_from_manifest(self, manifest: Mapping[str, Any]) -> None:
+        lines = ["# Evidence Notes", "", "Parser output is a reading aid. A SOURCE_FACT is valid only after a human/agent checks the original PDF at the locator.", ""]
+        for source in manifest.get("sources", []):
+            evidence = source.get("evidence_fields") or {}
+            if not evidence:
+                continue
+            identifier = str(source.get("identifier", source.get("source_id", "UNKNOWN")))
+            lines.extend([f"## {identifier}", "", f"- Title: {source.get('title', 'Untitled')}", f"- Parser: {source.get('parser', 'UNKNOWN')}", f"- Evidence boundary: {evidence.get('evidence_label', 'SOURCE_EXCERPT')} until original PDF verification."])
+            excerpts = evidence.get("excerpts") or []
+            for excerpt in excerpts:
+                lines.append(f"- SOURCE_EXCERPT [{identifier} @ {excerpt.get('locator', 'UNKNOWN')}]: {excerpt.get('text', '')}")
+            if evidence.get("evidence_level") == "VERIFIED":
+                claim = str(evidence.get("key_result") or evidence.get("study_object") or "Verified structured evidence")
+                for locator in str(evidence.get("locators", "UNKNOWN")).split(";"):
+                    lines.append(f"- VERIFIED_SOURCE_FACT [{identifier} @ {locator}]: {claim}")
+            lines.append("")
+        (self.root / "evidence-notes.md").write_text("\n".join(lines), encoding="utf-8")
+
     @staticmethod
     def _handoff(status: str, next_action: str, papers: Sequence[Paper], records: Mapping[str, Mapping[str, Any]], requests: Sequence[Mapping[str, str]], *, manifest: Mapping[str, Any] | None = None) -> str:
         coverage = (manifest or {}).get("coverage", {})
-        lines = ["# Research Handoff", "", f"Result: {status}", "", f"Next action: {next_action}", "", f"Run ID: {(manifest or {}).get('run_id', 'UNKNOWN')}", f"Brief revision: {(manifest or {}).get('brief_revision', 'UNKNOWN')}", "", f"Sources registered: {len(papers)}", f"Parsed full texts: {sum(1 for r in records.values() if r.get('parser'))}", "", "## Coverage", "", f"- Raw hits: {coverage.get('raw_hits', 0)}", f"- Unique candidates: {coverage.get('unique_candidates', 0)}", f"- Included: {coverage.get('included', 0)}", f"- Excluded: {coverage.get('excluded', 0)}", f"- Maybe: {coverage.get('maybe', 0)}", f"- Primary evidence: {coverage.get('primary_evidence', 0)}", f"- Relevant PDFs: {coverage.get('relevant_pdfs', 0)}", f"- Automatic downloads: {coverage.get('downloaded_pdfs', 0)}", f"- Parser attempts: {coverage.get('parser_attempts', 0)}", f"- Manual queue: {coverage.get('manual_queue', 0)}", f"- MinerU success: {coverage.get('mineru_success', 0)}", f"- MinerU failure: {coverage.get('mineru_failure', 0)}", f"- Unparsed: {coverage.get('unparsed', 0)}", f"- Evidence-ready: {coverage.get('evidence_ready', 0)}", f"- Gaps: {coverage.get('gaps', 0)}", "", "## Ownership", "", "Research owns manifest.json, source-registry.md, provider-status.md, terms-and-entities.md, evidence-notes.md, download-requests.md, the authorized PDF inbox and this handoff. Synthesis may read them but must not rewrite them.", "", "## Full-text route", "", "MinerU is the formal primary parser when configured. pdftotext is a LOW_FIDELITY_FALLBACK only. Original PDFs remain authoritative.", ""]
+        lines = ["# Research Handoff", "", f"Result: {status}", "", f"Next action: {next_action}", "", f"Run ID: {(manifest or {}).get('run_id', 'UNKNOWN')}", f"Brief revision: {(manifest or {}).get('brief_revision', 'UNKNOWN')}", "", f"Sources registered: {len(papers)}", f"Parsed full texts: {sum(1 for r in records.values() if r.get('parser'))}", "", "## Coverage", "", f"- Raw hits: {coverage.get('raw_hits', 0)}", f"- Unique candidates: {coverage.get('unique_candidates', 0)}", f"- Included: {coverage.get('included', 0)}", f"- Excluded: {coverage.get('excluded', 0)}", f"- Maybe: {coverage.get('maybe', 0)}", f"- Primary evidence: {coverage.get('primary_evidence', 0)}", f"- Relevant candidates: {coverage.get('relevant_candidates', 0)}", f"- Relevant PDFs: {coverage.get('relevant_pdfs', 0)}", f"- Automatic downloads: {coverage.get('downloaded_pdfs', 0)}", f"- Parser attempts: {coverage.get('parser_attempts', 0)}", f"- Manual queue: {coverage.get('manual_queue', 0)}", f"- MinerU success: {coverage.get('mineru_success', 0)}", f"- MinerU failure: {coverage.get('mineru_failure', 0)}", f"- pdftotext fallback: {coverage.get('fallback_pdftotext', 0)}", f"- Unparsed: {coverage.get('unparsed', 0)}", f"- Evidence-ready: {coverage.get('evidence_ready', 0)}", f"- Gaps: {coverage.get('gaps', 0)}", "", "## Ownership", "", "Research owns manifest.json, source-registry.md, provider-status.md, terms-and-entities.md, evidence-notes.md, download-requests.md, the authorized PDF inbox and this handoff. Synthesis may read them but must not rewrite them.", "", "## Full-text route", "", "MinerU is the formal primary parser when configured. pdftotext is a LOW_FIDELITY_FALLBACK only. Original PDFs remain authoritative.", ""]
         if requests:
             lines.extend(["## Waiting for user", "", "The following core papers need a user download or explicit binding:", ""] + [f"- {request['identity']}: {request['url'] or request['url_status']} → {request['target_inbox']}" for request in requests] + [""])
         if status == "RESEARCH_GAP":
@@ -1315,11 +1445,20 @@ def _title_candidate_key(paper: Paper) -> str:
 
 
 def _candidate_digest(candidates: Sequence[Mapping[str, Any]]) -> str:
+    # This digest gates manifest-only reruns. Include every candidate property
+    # that can change screening, provenance, or the legal/full-text route;
+    # omit only volatile projection fields such as generated timestamps.
+    keys = (
+        "identifier", "doi", "title", "year", "publication_type", "provider",
+        "providers", "claim_relevance", "non_substitutability", "priority",
+        "version", "query_family", "abstract", "full_text_url", "full_text_url_status",
+        "access_basis", "full_text_direct", "screening",
+    )
     payload = [
-        (str(row.get("identifier", "")), str(row.get("doi", "")), str(row.get("title", "")), str(row.get("year", "")), str(row.get("publication_type", "")), str(row.get("full_text_url", "")), str(row.get("access_basis", "")))
-        for row in candidates
+        {key: row.get(key, "") for key in keys}
+        for row in sorted(candidates, key=lambda item: str(item.get("identifier", "")))
     ]
-    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 
 def _screen_quality(paper: Paper) -> int:
@@ -1329,7 +1468,7 @@ def _screen_quality(paper: Paper) -> int:
 def _screen_paper(brief: str, paper: Paper) -> tuple[str, str, str, bool]:
     title = " ".join(paper.title.split()).lower()
     abstract = " ".join(paper.abstract.split()).lower()
-    text = title + " " + abstract + " " + paper.claim_relevance.lower()
+    text = title + " " + abstract
     topic = _brief_topic(brief).lower()
     terms = _brief_search_terms(brief)
     chemistry = bool(_CHEMISTRY_HINT_RE.search(text))
@@ -1340,14 +1479,21 @@ def _screen_paper(brief: str, paper: Paper) -> tuple[str, str, str, bool]:
     publication_type = (paper.publication_type or "journal-article").lower().replace("_", "-")
     review_like = any(word in (title + " " + publication_type) for word in ("review", "survey", "meta-analysis", "workshop", "book chapter", "book-chapter", "editorial"))
     preprint = "preprint" in publication_type or "arxiv" in text
+    generated_relevance = paper.claim_relevance.startswith("Candidate relevance from") or "screening still required" in paper.claim_relevance.lower()
+    if not paper.claim_relevance.strip() and not generated_relevance:
+        return "EXCLUDE", "excluded", "no core-claim relevance binding was supplied; retain only as a research gap", False
     year_match = re.search(r"(?:since|from)\s+(20\d{2})|(?:20\d{2})\s*[-–]\s*(?:present|20\d{2})", brief, re.I)
     min_year = int(year_match.group(1)) if year_match and year_match.group(1) else None
-    if min_year is not None and paper.year is not None and int(paper.year) < min_year:
-        return "EXCLUDE", "excluded", f"year {paper.year} is outside the confirmed range beginning {min_year}", False
+    if min_year is not None and paper.year is not None:
+        try:
+            numeric_year = int(paper.year)
+        except (TypeError, ValueError):
+            numeric_year = None
+        if numeric_year is not None and numeric_year < min_year:
+            return "EXCLUDE", "excluded", f"year {paper.year} is outside the confirmed range beginning {min_year}", False
     if review_like or preprint:
         role = "background" if review_like else "secondary"
         return "EXCLUDE", role, "publication type is contextual/non-primary and cannot enter the primary evidence pool", False
-    generated_relevance = paper.claim_relevance.startswith("Candidate relevance from") or "screening still required" in paper.claim_relevance.lower()
     explicit_relevance = bool(paper.claim_relevance.strip()) and not generated_relevance
     if generated_relevance and not paper.abstract and not any(term in text for term in ("protein", "unrelated", "workshop", "survey", "review")):
         return "MAYBE", "secondary", "provider hit lacks an abstract or concrete chemistry match; manual screening is required", True
@@ -1362,6 +1508,27 @@ def _screen_paper(brief: str, paper: Paper) -> tuple[str, str, str, bool]:
     return "MAYBE", "secondary", "ambiguous metadata relevance; retain for review-relevant manual screening", True
 
 
+def _screening_fields(brief: str, paper: Paper) -> dict[str, str]:
+    title = " ".join(paper.title.split()).lower()
+    abstract = " ".join(paper.abstract.split()).lower()
+    topic = _brief_topic(brief).lower()
+    topic_terms = [token for token in re.findall(r"[a-z][a-z0-9-]{3,}", topic) if token not in {"which", "what", "have", "been", "using"}]
+    title_match = bool(_CHEMISTRY_HINT_RE.search(title)) and (not topic_terms or any(token in title for token in topic_terms) or any(term.lower() in title for term in _brief_search_terms(brief)))
+    abstract_match = bool(abstract) and (title_match or any(term.lower() in abstract for term in _brief_search_terms(brief)))
+    publication_type = (paper.publication_type or "UNKNOWN").lower()
+    try:
+        year = str(int(paper.year)) if paper.year is not None else "UNKNOWN"
+    except (TypeError, ValueError):
+        year = "UNKNOWN"
+    return {
+        "title_screen": "MATCH" if title_match else "NO_MATCH",
+        "abstract_screen": "MATCH" if abstract_match else ("UNAVAILABLE" if not abstract else "NO_MATCH"),
+        "publication_type_screen": "CONTEXTUAL" if any(word in publication_type for word in ("review", "survey", "workshop", "chapter", "preprint")) else ("PRIMARY" if publication_type != "unknown" else "UNKNOWN"),
+        "year_screen": year,
+        "topic_screen": "MATCH" if title_match or abstract_match else "NO_MATCH",
+    }
+
+
 def _source_id(identifier: str) -> str:
     compact = re.sub(r"[^a-zA-Z0-9]+", "-", identifier.lower()).strip("-")
     return (compact[:62] or "source") + "-" + hashlib.sha256(identifier.encode()).hexdigest()[:8]
@@ -1373,6 +1540,17 @@ def _compact(value: str) -> str:
 
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _parser_failure_kind(parser: object, note: object) -> str:
+    """Classify parser fallback without calling an unconfigured route a failure."""
+    parser_name = str(parser or "").strip().lower()
+    note_text = str(note or "").lower()
+    if parser_name == "pdftotext":
+        return "FALLBACK_UNCONFIGURED" if "mineru not configured" in note_text else "MINERU_FAILURE"
+    if parser_name == "unparsed":
+        return "PARSER_FAILURE"
+    return ""
 
 
 def _section(text: str, heading: str) -> str:

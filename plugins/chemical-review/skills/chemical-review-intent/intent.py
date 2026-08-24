@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import argparse
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -47,7 +49,7 @@ class ExpertReviewResult:
 
 
 EXPERT_MODULES = {
-    "research_question", "core_claims", "scope", "evidence", "terminology", "evidence_matrix", "journal_fit",
+    "research_question", "core_claims", "scope", "scope_time", "exclusions", "audience_contribution", "evidence", "evidence_standards", "boundary_scenarios", "terminology", "primary_study_eligibility", "evidence_matrix", "journal_fit",
 }
 EXPERT_FINDING_FIELDS = ("id", "module", "severity", "affected_field", "rationale", "suggested_change", "confidence", "unresolved_questions")
 
@@ -82,6 +84,11 @@ def _yaml_scalar(value: object) -> str:
     if isinstance(value, (list, tuple)):
         return "\n".join(f"- {str(item).strip()}" for item in value)
     return str(value).strip()
+
+
+def _brief_digest(brief: ReviewBrief) -> str:
+    payload = {"topic": brief.topic, "revision": brief.revision, "values": dict(brief.values)}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 
 class IntentStage:
@@ -178,12 +185,15 @@ class IntentStage:
             raise ConfirmationRequired("review brief is not explicitly confirmed")
         return brief
 
-    def optional_expert_review(self, choice: str, *, reviewer: Any | None = None, materials: tuple[str | Path, ...] = ()) -> ExpertReviewResult:
+    def optional_expert_review(self, choice: str, *, reviewer: Any | None = None, materials: tuple[str | Path, ...] = (), timeout_seconds: float = 60.0, budget: int = 1) -> ExpertReviewResult:
         """Run an isolated advisory check without mutating Intent authority."""
         current = self.read_confirmed()
         normalized = str(choice).strip().lower()
         self._write_expert_prompt(current)
         if normalized in {"no", "skip", "defer"}:
+            for path in (self.expert_report_path, self.expert_report_markdown):
+                if path.exists():
+                    path.unlink()
             decision = "SKIPPED" if normalized in {"no", "skip"} else "DEFERRED"
             self._write_expert_decision(decision, "User chose not to run the optional advisory review.")
             return ExpertReviewResult(decision=decision, success=False, reason="user choice")
@@ -191,9 +201,9 @@ class IntentStage:
             raise ValueError("expert review choice must be yes, no, skip or defer")
         payload = {
             "role": "chemistry-literature journal reviewer (advisory only)",
-            "brief": {"topic": current.topic, "revision": current.revision, "values": dict(current.values)},
+            "brief": {"topic": current.topic, "revision": current.revision, "values": {key: value for key, value in current.values.items() if key != "known_material"}},
             "material_scope": self._safe_review_materials(materials),
-            "required_modules": ["research_question", "core_claims", "scope", "evidence", "terminology", "evidence_matrix", "journal_fit"],
+            "required_modules": ["research_question", "core_claims", "scope_time", "exclusions", "audience_contribution", "evidence_standards", "boundary_scenarios", "terminology", "primary_study_eligibility", "evidence_matrix", "journal_fit"],
             "constraints": [
                 "Use only this brief and explicitly allowlisted material.",
                 "Do not mutate files or produce source facts; report UNKNOWN, NOT_COMPARABLE and Chemical GAP when needed.",
@@ -204,22 +214,41 @@ class IntentStage:
             reason = "UNAVAILABLE: no reviewer was supplied"
             self._write_expert_failure(reason, payload)
             return ExpertReviewResult(decision="FAILED", success=False, reason=reason)
+        if budget < 1:
+            reason = "BUDGET_EXHAUSTED: reviewer budget must be positive"
+            self._write_expert_failure(reason, payload)
+            return ExpertReviewResult(decision="FAILED", success=False, reason=reason)
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chemical-review-expert")
+        future = executor.submit(reviewer.review, payload) if hasattr(reviewer, "review") else executor.submit(reviewer, payload)
         try:
-            raw = reviewer.review(payload) if hasattr(reviewer, "review") else reviewer(payload)
+            # Do not use the executor as a context manager here: its __exit__
+            # waits for a timed-out callback and would defeat the timeout gate.
+            raw = future.result(timeout=max(0.1, float(timeout_seconds)))
+        except FutureTimeout:
+            reason = "TIMEOUT: advisory reviewer exceeded the configured timeout"
+            future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+            self._write_expert_failure(reason, payload)
+            return ExpertReviewResult(decision="FAILED", success=False, reason=reason)
         except Exception as exc:  # injected reviewer failures must fail closed without brief mutation
+            executor.shutdown(wait=False, cancel_futures=True)
             reason = f"UNAVAILABLE: {type(exc).__name__}"
             self._write_expert_failure(reason, payload)
             return ExpertReviewResult(decision="FAILED", success=False, reason=reason)
+        else:
+            executor.shutdown(wait=True)
         valid, findings, reason = self._normalize_expert_report(raw)
         if not valid:
             self._write_expert_failure("MALFORMED: " + reason, payload)
             return ExpertReviewResult(decision="FAILED", success=False, reason=reason)
         required_modules = tuple(payload["required_modules"])
+        findings = self._enrich_expert_findings(current, findings)
         report = {
             "kind": "chemical-review-intent-expert-advisory",
             "advisory": True,
             "reviewer_role": "chemistry-literature journal reviewer",
             "brief_revision": current.revision,
+            "brief_digest": _brief_digest(current),
             "material_scope": payload["material_scope"],
             "findings": findings,
             "module_coverage": {module: ("FINDINGS" if any(finding.get("module") == module for finding in findings) else "NO_FINDING_REPORTED") for module in required_modules},
@@ -245,9 +274,15 @@ class IntentStage:
         except (OSError, json.JSONDecodeError):
             return {}
         grouped: dict[str, list[Mapping[str, Any]]] = {}
+        display_modules = {
+            "scope_time": "scope", "exclusions": "scope", "audience_contribution": "journal_fit",
+            "evidence_standards": "evidence", "boundary_scenarios": "evidence", "primary_study_eligibility": "evidence",
+            "evidence_matrix": "evidence_matrix",
+        }
         for finding in report.get("findings", []) if isinstance(report, Mapping) else ():
             if isinstance(finding, Mapping):
-                grouped.setdefault(str(finding.get("module", "scope")), []).append(finding)
+                module = display_modules.get(str(finding.get("module", "scope")), str(finding.get("module", "scope")))
+                grouped.setdefault(module, []).append(finding)
         return {module: tuple(items) for module, items in grouped.items()}
 
     def apply_expert_review_decision(self, decision: str, *, selected: Sequence[str | Mapping[str, Any]] = ()) -> str:
@@ -261,6 +296,11 @@ class IntentStage:
         if not self.expert_report_path.is_file():
             raise ValueError("no successful expert review report exists")
         report = json.loads(self.expert_report_path.read_text(encoding="utf-8"))
+        current = self.read_any(ignore_pending=True)
+        if report.get("status") == "FAILED" or report.get("advisory") is not True:
+            raise ConfirmationRequired("expert report is not a successful advisory report")
+        if report.get("brief_revision") != current.revision or report.get("brief_digest") != _brief_digest(current):
+            raise ConfirmationRequired("expert report is stale for the current confirmed brief")
         findings = report.get("findings", []) if isinstance(report, Mapping) else []
         requested = {item if isinstance(item, str) else str(item.get("id", "")) for item in selected}
         chosen = [finding for finding in findings if isinstance(finding, Mapping) and str(finding.get("id", "")) in requested]
@@ -291,11 +331,13 @@ class IntentStage:
         for raw_path in materials:
             path = Path(raw_path)
             try:
+                if path.is_symlink():
+                    continue
                 resolved = path.resolve()
                 resolved.relative_to(self.project_root)
             except ValueError:
                 continue
-            if resolved.is_symlink() or not resolved.is_file() or resolved.name.startswith("."):
+            if not resolved.is_file() or resolved.name.startswith("."):
                 continue
             if resolved.name not in allowed_names and not resolved.name.startswith("evidence-"):
                 continue
@@ -328,6 +370,21 @@ class IntentStage:
             finding.setdefault("after", str(finding.get("suggested_change", "")))
             findings.append({**{field: finding[field] for field in EXPERT_FINDING_FIELDS}, "before": str(finding.get("before", "")), "after": str(finding.get("after", ""))})
         return True, findings, ""
+
+    @staticmethod
+    def _enrich_expert_findings(brief: ReviewBrief, findings: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        enriched: list[dict[str, Any]] = []
+        for finding in findings:
+            item = dict(finding)
+            field = str(item.get("affected_field", ""))
+            # The reviewer cannot author the baseline. Recompute `before`
+            # from the current canonical brief so a stale/misleading callback
+            # payload cannot be presented as an applied delta.
+            before = brief.values.get(field, "UNKNOWN")
+            item["before"] = _yaml_scalar(before) or "UNKNOWN"
+            item["after"] = str(item.get("after") or item.get("suggested_change") or "UNKNOWN")
+            enriched.append(item)
+        return enriched
 
     def _write_expert_decision(self, decision: str, detail: str) -> None:
         self.expert_decision_path.write_text(f"# Expert Review Decision\n\nDecision: {decision}\n\n{detail}\n", encoding="utf-8")
@@ -396,21 +453,27 @@ class IntentStage:
             snapshot.write_text(self.path.read_text(encoding="utf-8"), encoding="utf-8")
 
     def _safe_materials(self, materials: tuple[str | Path, ...]) -> str:
+        allowed_names = {"project-context.md", "domain-profile.md", "research-handoff.md", "research-evidence.md"}
         excerpts: list[str] = []
         for raw_path in materials:
             path = Path(raw_path)
             try:
+                if path.is_symlink():
+                    continue
                 resolved = path.resolve()
                 resolved.relative_to(self.project_root)
             except ValueError:
                 continue
-            if resolved.is_symlink() or not resolved.is_file() or resolved.name.startswith("."):
+            if not resolved.is_file() or resolved.name.startswith("."):
+                continue
+            if resolved.name not in allowed_names and not resolved.name.startswith("evidence-"):
                 continue
             try:
                 text = resolved.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            excerpts.append(f"- {resolved.relative_to(self.project_root).as_posix()}: {' '.join(text.split())[:1200]}")
+            safe_text = re.sub(r"(?i)(api[_-]?key|token|password|secret|authorization)\s*[:=]\s*[^\s,;]+", r"\1=[REDACTED]", text)
+            excerpts.append(f"- {resolved.relative_to(self.project_root).as_posix()}: {' '.join(safe_text.split())[:1200]}")
         return "\n".join(excerpts)
 
     def _write(self, brief: ReviewBrief, *, next_action: str, path: Path | None = None) -> None:
@@ -461,7 +524,7 @@ def main() -> int:
     accept.add_argument("--project", type=Path, required=True)
     expert = sub.add_parser("expert-review")
     expert.add_argument("--project", type=Path, required=True)
-    expert.add_argument("--choice", choices=("yes", "no", "skip"), required=True)
+    expert.add_argument("--choice", choices=("yes", "no", "skip", "defer"), required=True)
     expert.add_argument("--fixture-json", type=Path)
     expert.add_argument("--material", type=Path, action="append", default=[])
     expert_decision = sub.add_parser("expert-decision")

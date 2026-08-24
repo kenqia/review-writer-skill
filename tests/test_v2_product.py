@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -102,9 +103,9 @@ class V2ProductTests(unittest.TestCase):
                 stage.run(config_choice="pause")
             self.assertIn("Decision: PAUSED", (project / "research" / "configuration-preflight.md").read_text(encoding="utf-8"))
 
-            result = stage.run(config_choice="accept_degraded")
-            self.assertEqual(result.status, "RESEARCH_GAP")
-            self.assertIn("Decision: ACCEPT_DEGRADED", (project / "research" / "configuration-preflight.md").read_text(encoding="utf-8"))
+            with self.assertRaisesRegex(RuntimeError, "configuration choice"):
+                stage.run(config_choice="accept_degraded")
+            self.assertIn("Decision: PENDING", (project / "research" / "configuration-preflight.md").read_text(encoding="utf-8"))
 
     def test_research_waits_for_restricted_pdf_then_resumes_without_dropping_registry(self):
         research = load_module("v2_research_test", V2_SKILLS["chemical-review-research"] / "research.py")
@@ -403,6 +404,20 @@ class V2ProductTests(unittest.TestCase):
             self.assertIn("Ligand electronics alter selectivity.", requests)
             self.assertIn("screening still required", requests)
 
+    def test_relevant_title_without_claim_binding_is_not_auto_queued(self):
+        research = load_module("v2_claim_binding_screen", V2_SKILLS["chemical-review-research"] / "research.py")
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "review-brief.md").write_text("---\nconfirmed: true\n---\n\nTopic: nickel coupling\n", encoding="utf-8")
+            fixture_dir = project / "fixtures"
+            fixture_dir.mkdir()
+            (fixture_dir / "research.json").write_text(json.dumps({"papers": [{"identifier": "doi:10.1/unbound", "doi": "10.1/unbound", "title": "Nickel coupling chemistry", "abstract": "Nickel coupling chemistry", "year": 2024, "full_text_url": "https://oa.example/unbound.pdf", "full_text_direct": True, "access_basis": "OPEN_ACCESS"}]}), encoding="utf-8")
+            result = research.ResearchStage(project).run(fixture_dir=fixture_dir)
+            self.assertEqual(result.status, "RESEARCH_GAP")
+            manifest = json.loads((project / "research" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["coverage"]["included"], 0)
+            self.assertEqual(manifest["coverage"]["manual_queue"], 0)
+
     def test_credential_bearing_full_text_url_is_withheld_with_visible_recovery_action(self):
         research = load_module("v2_signed_url_route", V2_SKILLS["chemical-review-research"] / "research.py")
         with tempfile.TemporaryDirectory() as temp:
@@ -433,10 +448,12 @@ class V2ProductTests(unittest.TestCase):
             request_text = (project / "research" / "download-requests.md").read_text(encoding="utf-8")
             handoff_text = (project / "research" / "research-handoff.md").read_text(encoding="utf-8")
             registry_text = (project / "research" / "source-registry.md").read_text(encoding="utf-8")
+            manifest_text = (project / "research" / "manifest.json").read_text(encoding="utf-8")
             self.assertIn("WITHHELD_CREDENTIAL_BEARING_URL", request_text)
             self.assertIn("fresh legal landing/download URL without embedded credentials", request_text)
             self.assertIn("WITHHELD_CREDENTIAL_BEARING_URL", registry_text)
             self.assertNotIn("URLSECRET", request_text + handoff_text + registry_text)
+            self.assertNotIn("URLSECRET", manifest_text)
 
     def test_configured_open_access_locator_is_downloaded_and_recorded_before_parse(self):
         research = load_module("v2_open_access_route", V2_SKILLS["chemical-review-research"] / "research.py")
@@ -1000,6 +1017,26 @@ class V2ProductTests(unittest.TestCase):
             self.assertFalse(result.success)
             self.assertEqual(before, (project / "review-brief.md").read_bytes())
             self.assertIn("MALFORMED", (project / "expert-review-report.md").read_text(encoding="utf-8"))
+
+    def test_intent_expert_timeout_returns_without_waiting_for_callback(self):
+        intent = load_module("v2_intent_expert_timeout", V2_SKILLS["chemical-review-intent"] / "intent.py")
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            stage = intent.IntentStage(project)
+            stage.initialize("chemistry")
+            stage.confirm({key: ("claim",) if key == "core_claims" else "value" for key, _ in intent.FIELDS})
+
+            def slow_reviewer(_payload):
+                time.sleep(0.25)
+                return {"findings": []}
+
+            started = time.monotonic()
+            result = stage.optional_expert_review("yes", reviewer=slow_reviewer, timeout_seconds=0.01)
+            elapsed = time.monotonic() - started
+            self.assertFalse(result.success)
+            self.assertIn("TIMEOUT", result.reason)
+            self.assertLess(elapsed, 0.15)
+            self.assertIn("TIMEOUT", (project / "expert-review-report.md").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
