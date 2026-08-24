@@ -9,6 +9,8 @@
 - Require explicit `VERIFIED_SOURCE_FACT` evidence markers, select download
   requests by claim relevance/non-substitutability instead of a fixed count,
   and redact constructor-supplied provider credentials from failures.
+- Populate candidate claim relevance from the confirmed brief on live provider
+  discovery so restricted core-paper URLs can enter the user download route.
 
 ## 0.2.0-beta.1 — v2 implementation candidate
 

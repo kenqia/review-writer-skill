@@ -515,13 +515,17 @@ class ResearchStage:
         if fixture.get("papers"):
             return [_paper_from_mapping(row) for row in fixture["papers"] if isinstance(row, Mapping)]
         topic = _section(brief, "Topic") or _section(brief, "Research question")
+        core_claims = _core_claims(brief)
         if adapters is None:
             adapters = _configured_discovery_adapters()
         found: dict[str, Paper] = {}
         for adapter in adapters:
             try:
                 for path in SEARCH_PATHS:
-                    for paper in adapter.search(f"{topic}; terms: {', '.join(terms)}; {path}", limit=5):
+                    query = f"{topic}; core claims: {'; '.join(core_claims)}; terms: {', '.join(terms)}; {path}"
+                    for paper in adapter.search(query, limit=5):
+                        if not paper.claim_relevance:
+                            paper = replace(paper, claim_relevance=_candidate_claim_relevance(core_claims, path))
                         key = paper.doi.lower() if paper.doi else paper.identifier.lower()
                         found.setdefault(key, paper)
             except (ProviderUnavailable, AttributeError):
@@ -779,6 +783,27 @@ def _digest(path: Path) -> str:
 def _section(text: str, heading: str) -> str:
     match = re.search(rf"^## {re.escape(heading)}\s*$([\s\S]*?)(?=^## |\Z)", text, re.M)
     return " ".join(match.group(1).split()) if match else ""
+
+
+def _core_claims(text: str) -> tuple[str, ...]:
+    for heading in ("Core-claim candidates", "Core claims"):
+        match = re.search(rf"^## {re.escape(heading)}\s*$([\s\S]*?)(?=^## |\Z)", text, re.M)
+        if not match:
+            continue
+        claims = tuple(
+            line.strip()[2:].strip() if line.strip().startswith("- ") else line.strip()
+            for line in match.group(1).splitlines()
+            if line.strip() and not line.strip().startswith("Open question")
+        )
+        if claims:
+            return claims
+    question = _section(text, "Research question")
+    return (question,) if question else ("the confirmed review question",)
+
+
+def _candidate_claim_relevance(core_claims: Sequence[str], search_path: str) -> str:
+    claims = "; ".join(core_claims[:5])
+    return f"Candidate relevance from {search_path} search for confirmed core claim(s): {claims}. Metadata/title screening still required."
 
 
 def _env_enabled(name: str) -> bool:

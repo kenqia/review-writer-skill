@@ -252,6 +252,38 @@ class V2ProductTests(unittest.TestCase):
             self.assertIn("non_substitutability: Unique reaction conditions and endpoint.", requests)
             self.assertNotIn("doi:10.1234/background", requests)
 
+    def test_provider_discovery_marks_candidate_claim_relevance_for_restricted_full_text(self):
+        research = load_module("v2_discovery_claim_relevance", V2_SKILLS["chemical-review-research"] / "research.py")
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / "review-brief.md").write_text(
+                "---\nconfirmed: true\n---\n\n## Topic\nNickel coupling\n\n## Core-claim candidates\n- Ligand electronics alter selectivity.\n",
+                encoding="utf-8",
+            )
+
+            class Discovery:
+                name = "Fixture discovery"
+
+                def search(self, query, limit=5):
+                    return (research.Paper("doi:10.1234/discovered", "Discovered core paper", "10.1234/discovered", 2024, provider=self.name),)
+
+            class Locator:
+                name = "Fixture locator"
+
+                def locate(self, doi):
+                    return (research.FullTextLocation("doi:" + doi, "https://publisher.example/discovered.pdf", "RESTRICTED", self.name, False),)
+
+            result = research.ResearchStage(project).run(
+                adapters=(Discovery(),),
+                entity_adapters=(),
+                full_text_adapters=(Locator(),),
+            )
+            self.assertEqual(result.status, "WAITING_FOR_USER")
+            requests = (project / "research" / "download-requests.md").read_text(encoding="utf-8")
+            self.assertIn("https://publisher.example/discovered.pdf", requests)
+            self.assertIn("Ligand electronics alter selectivity.", requests)
+            self.assertIn("screening still required", requests)
+
     def test_configured_open_access_locator_is_downloaded_and_recorded_before_parse(self):
         research = load_module("v2_open_access_route", V2_SKILLS["chemical-review-research"] / "research.py")
         intent = load_module("v2_open_access_intent", V2_SKILLS["chemical-review-intent"] / "intent.py")
