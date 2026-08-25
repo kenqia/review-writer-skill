@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased — review hardening
+## Unreleased — Markdown-first cutover
+
+- Remove the four stage runners and their gate-heavy product tests from the skill
+  surface; canonical and packaged skills now contain Markdown companions and
+  agent manifests only.
+- Keep configuration, evidence, handoff, and QA decisions readable in the
+  conversation and project Markdown instead of hiding them in runtime state.
+- Narrow the package README, CONTEXT, prompts, and acceptance report around the
+  lightweight product boundary.
+
+## Historical runner prototype
 
 - Fail closed on mismatched source-fact content, non-PDF downloads, ambiguous
   inbox identities, parser timeouts, and provider error credential leakage.

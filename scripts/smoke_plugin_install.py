@@ -9,10 +9,9 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 from tempfile import TemporaryDirectory
 
-from plugin_boundary import resolve_plugin_skills
+from plugin_boundary import V2_SKILL_FILES, resolve_plugin_skills
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,25 +56,12 @@ def main() -> int:
         resolution = resolve_plugin_skills(installed_path)
         if resolution.version != expected_version:
             raise RuntimeError(f"installed bundled skill version mismatch: {resolution}")
-        with TemporaryDirectory(prefix="chemical-review-installed-smoke-") as project:
-            intent = next(path for path in resolution.skill_paths if path.name == "chemical-review-intent")
-            completed = _run(
-                [
-                    sys.executable,
-                    str(intent / "intent.py"),
-                    "init",
-                    "--project",
-                    project,
-                    "--topic",
-                    "ligand effects in nickel-mediated C-C coupling",
-                ],
-                env,
-            )
-            payload = json.loads(completed.stdout)
-            if payload != {"confirmed": False, "revision": 1, "next": "human-confirmation"}:
-                raise RuntimeError(f"unexpected installed Intent result: {payload}")
-            if not (Path(project) / "review-brief.md").is_file():
-                raise RuntimeError("installed Intent did not create review-brief.md")
+        with TemporaryDirectory(prefix="chemical-review-installed-smoke-"):
+            for skill_name, expected_files in V2_SKILL_FILES.items():
+                skill = installed_path / "skills" / skill_name
+                for filename in expected_files:
+                    if not (skill / filename).is_file():
+                        raise RuntimeError(f"installed document-first bundle is missing {skill_name}/{filename}")
     print("Installed plugin cold-start smoke passed.")
     return 0
 

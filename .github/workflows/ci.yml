@@ -22,11 +22,7 @@ jobs:
       - name: Install Codex CLI for plugin smoke
         run: npm install --global @openai/codex@0.149.0
       - name: Install verification tools
-        run: >-
-          python -m pip install --disable-pip-version-check
-          ruff==0.14.14
-          python-docx==1.2.0
-          Pillow==12.2.0
+        run: python -m pip install --disable-pip-version-check ruff==0.14.14
       - name: Verify canonical plugin projection
         run: python scripts/build_plugin.py --check
       - name: Validate plugin package
@@ -34,17 +30,7 @@ jobs:
       - name: Run tests
         run: python -m unittest discover -s tests -p 'test_*.py'
       - name: Run Ruff
-        run: >-
-          ruff check --target-version py311
-          .agents/skills/chemical-review-intent
-          .agents/skills/chemical-review-research
-          .agents/skills/chemical-review-synthesis
-          .agents/skills/chemical-review-qa
-          plugins/chemical-review/skills/chemical-review-intent
-          plugins/chemical-review/skills/chemical-review-research
-          plugins/chemical-review/skills/chemical-review-synthesis
-          plugins/chemical-review/skills/chemical-review-qa
-          scripts tests
+        run: ruff check --target-version py311 scripts tests
       - name: Build release archive
         run: python scripts/package_plugin.py
       - name: Run bundled cold-start smoke

@@ -1,17 +1,24 @@
 ---
 name: chemical-review-synthesis
-description: "Produce one evidence-bounded critical chemistry review draft from Intent and Research Markdown."
+description: "Plan and write one evidence-bounded critical chemistry review draft from an accepted brief and Research handoff."
 ---
 
 # Chemical Review Synthesis
 
-独立入口：直接读取 `review-brief.md` 和 Research 的 `research-handoff.md`、`evidence-notes.md`、`comparability-matrix.md`，独占项目根目录唯一 `draft.md`，并从同一输入生成 `reader-draft.md` 与 `research-draft.md` 两个同步视图。三者都由 Synthesis 写入，不能各自独立演化。不构造旧 Prototype/PRD/unit payload，不使用 central merge。
+Synthesis 是一个自然语言写作工作台。先读已确认的 `review-brief.md` 和研究者接受的 Research handoff，再按顺序参考：
 
-正文必须区分 `SOURCE_FACT`、`MODEL_SYNTHESIS`、`MODEL_HYPOTHESIS`，保留 `UNKNOWN`、`NOT_COMPARABLE` 和 `Chemical GAP`。正文中的 `SOURCE_FACT` 必须对应 Research 中明确标记为 `VERIFIED_SOURCE_FACT [identity @ locator]: claim`、且已由人/Agent 对照原始 PDF 核验的证据；仅有 `SOURCE_EXCERPT` 或未标记的 `SOURCE_FACT` 不够。正文 claim 文本还必须出现在同一已核验证据行中。`RESEARCH_GAP` 下允许局部候选稿，但必须标记 `unreviewed; evidence-bounded; partial-scope`，不能补造缺失 SOURCE_FACT。
+1. [`planning.md`](planning.md)：把证据、比较主轴和文章结构说清楚；
+2. [`drafting.md`](drafting.md)：以 `draft.md` 为唯一内容基线，写出批判性叙述；
+3. [`handoff.md`](handoff.md)：说明读者版、研究版、缺口和 QA 建议。
 
-```bash
-python synthesis.py --project /path/to/project --scaffold > candidate.md
-python synthesis.py --project /path/to/project --candidate candidate.md
-```
+## 推荐节奏
 
-Synthesis 独占 `draft.md`；QA 只能读取并报告，不能改写它。
+先把写作计划交给研究者看一眼；计划得到同意后再写正文。正文可以比较、解释、反驳并提出可检验假设，但每个强主张都应让读者看得出它来自来源事实、模型综合还是模型假设。
+
+同一份 `draft.md` 可以投影出干净的 `reader-draft.md` 和带依据提示的 `research-draft.md`。缺证据时降低语气，保留 `UNKNOWN`、`NOT_COMPARABLE` 和 `Chemical GAP`；研究范围不完整时明确写成 partial-scope candidate。
+
+写作交接完成后，把高风险 claim、反例和待核验事项交给研究者。研究者可以继续改 Synthesis，也可以让 QA 进行独立阅读；QA 不是自动发布或科学接受按钮。
+
+## 轻量边界
+
+`draft.md` 是内容权威，Markdown handoff 是讨论材料。保持来源事实与推断可追溯即可，不要求内部 schema、固定章节数量或软件 payload。需要返工时保留旧稿和反馈，用普通语言说明要回到 Research、Synthesis 还是仅做表达修订。

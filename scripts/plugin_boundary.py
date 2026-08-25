@@ -14,10 +14,23 @@ V2_SKILL_NAMES = (
     "chemical-review-qa",
 )
 V2_SKILL_FILES = {
-    "chemical-review-intent": frozenset({"SKILL.md", "agents/openai.yaml", "intent.py"}),
-    "chemical-review-research": frozenset({"SKILL.md", "agents/openai.yaml", "research.py"}),
-    "chemical-review-synthesis": frozenset({"SKILL.md", "agents/openai.yaml", "synthesis.py"}),
-    "chemical-review-qa": frozenset({"SKILL.md", "agents/openai.yaml", "qa.py"}),
+    "chemical-review-intent": frozenset({
+        "SKILL.md",
+        "grilling.md",
+        "domain-modeling.md",
+        "expert-review.md",
+        "agents/openai.yaml",
+    }),
+    "chemical-review-research": frozenset({
+        "SKILL.md", "preflight.md", "discovery-and-screening.md", "evidence-and-handoff.md",
+        "agents/openai.yaml",
+    }),
+    "chemical-review-synthesis": frozenset({
+        "SKILL.md", "planning.md", "drafting.md", "handoff.md", "agents/openai.yaml",
+    }),
+    "chemical-review-qa": frozenset({
+        "SKILL.md", "reviewers.md", "arbiter.md", "revision-routing.md", "agents/openai.yaml",
+    }),
 }
 RUNTIME_SKILL_FILES = frozenset(
     f"skills/{skill}/{relative}"

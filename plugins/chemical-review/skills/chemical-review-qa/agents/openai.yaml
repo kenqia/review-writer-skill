@@ -1,6 +1,6 @@
 interface:
   display_name: "Chemical Review QA"
   short_description: "Run isolated evidence, chemistry, synthesis, and overclaim reviews."
-  default_prompt: "Use $chemical-review-qa to run the four independent clean-context reviews and preserve conflicts."
+  default_prompt: "Use $chemical-review-qa to invite independent reviewer perspectives, preserve disagreements in Markdown, and help the researcher choose the next revision."
 policy:
   allow_implicit_invocation: false

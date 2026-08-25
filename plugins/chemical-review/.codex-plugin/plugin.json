@@ -14,15 +14,15 @@
   "interface": {
     "displayName": "Chemical Review",
     "shortDescription": "Iteratively develop a critical chemical literature review.",
-    "longDescription": "Separates Intent, Research, Synthesis, and multi-angle QA through explicit Markdown handoffs, legal full-text waits, locator-bound evidence, and human scientific acceptance. It does not claim scientific validity or journal acceptance.",
+    "longDescription": "A lightweight set of four composable Markdown-first skills for shaping, researching, drafting, and discussing a critical chemical literature review. The researcher keeps scientific judgement; the plugin does not claim validity or journal acceptance.",
     "developerName": "Review Writer contributors",
     "category": "Research",
     "capabilities": ["Interactive", "Research", "Write"],
     "websiteURL": "https://github.com/kenqia/review-writer-skill",
     "defaultPrompt": [
       "Use $chemical-review-intent to define and confirm a chemistry review brief.",
-      "Use $chemical-review-research to discover sources, route legal full text, and prepare evidence.",
-      "Use $chemical-review-synthesis and $chemical-review-qa to draft and independently audit the review."
+      "Use $chemical-review-research with its preflight, discovery, and evidence Markdown companions to make the evidence route visible.",
+      "Use $chemical-review-synthesis and $chemical-review-qa to discuss one draft, independent observations, and the next revision in Markdown."
     ]
   }
 }

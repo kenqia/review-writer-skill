@@ -1,13 +1,22 @@
-# Chemical Review v2 plugin
+# Chemical Review plugin
 
-This plugin packages four independently invocable skills:
+这是一个轻量的 Markdown-first skill 包：
 
 `chemical-review-intent → chemical-review-research → chemical-review-synthesis → chemical-review-qa`
 
-They exchange explicit Markdown artifacts. Intent owns `review-brief.md`; Research owns `research/` (including the authorized PDF inbox and download requests); Synthesis owns the single `draft.md`; QA owns independent reports and revision plans. There is no central orchestrator, v1 payload, Prototype/PRD/Issues/Implement workflow, or second content authority.
+Intent 用 `grilling` 和 `domain-modeling` companion 逐轮收敛 brief，并可选地请 fresh sub-agent 做 advisory review。Research、Synthesis 和 QA 各自读取自己的三份 Markdown companion；它们通过可读的 brief、evidence、draft 和 feedback 交接，不依赖中央 orchestrator 或阶段代码。
 
-Research implements configurable OpenAlex, Semantic Scholar, Crossref, PubChem, ChEBI, Unpaywall, Europe PMC, CORE, and MinerU routes. Restricted or authorization-ambiguous papers produce a legal download URL and instructions. Place the downloaded PDF in `research/inbox/authorized-pdfs/` and rerun Research. `pdftotext` is a clearly degraded local fallback; the original PDF remains authoritative.
+Research 会把检索路线、全文授权和证据缺口讲清楚。需要配置或用户下载时，主会话停下来说明下一步；它不会因为某个 provider 不可用就暗中改写研究范围。原始来源和研究者核验拥有最终权威。
 
-QA prepares four clean contexts: evidence/locator, chemistry comparability/mechanism, synthesis novelty/rebuttal, and overclaim/counterexample. An arbiter preserves conflicts and advises the human scientific editor; it never accepts scientific validity by vote.
+Synthesis 维护一个 `draft.md` 内容基线；QA 邀请独立 reviewer 视角并保留冲突。二者都支持普通语言反馈，研究者决定是否返工、接受或暂缓。
 
-Invoke the stages explicitly with `$chemical-review-intent`, `$chemical-review-research`, `$chemical-review-synthesis`, and `$chemical-review-qa`. Configure credentials only through environment variables or an untracked local env file (see the repository `.env.example`); never place real values in this plugin or its Markdown handoffs.
+显式调用：
+
+```text
+$chemical-review-intent
+$chemical-review-research
+$chemical-review-synthesis
+$chemical-review-qa
+```
+
+这个 plugin 是协作辅助，不是科学真值机、自动投稿器或期刊接收预测器。真实凭据只在研究者自己的环境中配置，不写入 plugin 或 Markdown handoff。

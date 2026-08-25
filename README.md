@@ -1,32 +1,23 @@
-# Review Writer — Chemical Review v2
+# Review Writer — Chemical Review
 
-这是 Chemical Review 的唯一开发源码仓。v2 收敛为四个可独立调用、可组合的 skills：
+Chemical Review 是一个轻量的化学文献综述 skill 包。它用自然语言 Markdown 帮助研究者把想法变成可讨论的 brief、证据笔记、候选正文和 QA 反馈；不依赖阶段 runner、脚本状态机或 provider 接入，也不替研究者做最终科学判断。
 
-`chemical-review-intent → chemical-review-research → chemical-review-synthesis → chemical-review-qa`
+## 包的形状
 
-它们通过显式 Markdown 交接，不证明科学有效性、不复现实验、不预测期刊接收，也不取代人类科学编辑。
+源码和发布 projection 都只包含 Markdown 规则与 agent manifest：
 
-## 源码与 plugin 边界
-
-- **canonical source**：`.agents/skills/chemical-review-{intent,research,synthesis,qa}/`
-- **发布 projection**：`plugins/chemical-review/skills/chemical-review-{intent,research,synthesis,qa}/`
-- **plugin manifest**：`plugins/chemical-review/.codex-plugin/plugin.json`
-- **同步命令**：`python scripts/build_plugin.py`
-- **配置样例**：`.env.example`（真实凭据只能放在未跟踪的本地 env 文件）
-
-发布 projection 由脚本生成。v1 orchestrator、payload 和七阶段 workflow 不在 v2 包边界内。
-
-## 从 clone 开始
-
-```bash
-git clone https://github.com/kenqia/review-writer-skill.git
-cd review-writer-skill
-python scripts/build_plugin.py --check
-python scripts/validate_plugin_package.py
-python -B scripts/smoke_plugin.py
+```text
+chemical-review-{intent,research,synthesis,qa}/
+├── SKILL.md                 # 这一阶段做什么、何时读取下面的文档
+├── Markdown companion         # 该阶段的步骤、角色或交接规则
+└── agents/openai.yaml       # 展示名和默认提示
 ```
 
-在 Codex 中添加本地 marketplace 后安装 `chemical-review@review-writer-skill`，再显式使用：
+`.agents/skills/` 是 canonical source，`plugins/chemical-review/` 是发布 projection。`scripts/` 只负责同步、打包和检查文件，不参与综述运行。
+
+## 使用方式
+
+在 Codex 中按需显式调用：
 
 ```text
 $chemical-review-intent
@@ -35,31 +26,36 @@ $chemical-review-synthesis
 $chemical-review-qa
 ```
 
-第一次可用主题：`ligand effects in nickel-mediated C–C coupling`。
+没有必要一次调用全部阶段。每个阶段都可以先读自己的 `SKILL.md`，再按它指向的 companion 文档工作，并用普通语言把结果交回研究者。
 
-## 四阶段交接
+## 四个阶段
 
-Intent 创建 `review-brief.md`；topic-only 草案含未决问题，只有显式确认后 Research 才能继续。已确认意图的变化先写 `review-brief.proposed.md`，确认后才生效。完整 brief 后还可选择隔离的化学文献综述 advisory review；skip、失败或拒绝不改 canonical brief，选中的建议也只进入 proposed brief，仍需显式确认。
+Intent 用 `grilling.md` 和 `domain-modeling.md` 逐轮收敛 research question、范围、术语和证据期望，确认后写 `review-brief.md`；需要时再加载 `expert-review.md` 请 fresh sub-agent 做 advisory review。它只是建议，不接 provider，也不改 canonical brief。
 
-Research 独占 `research/`，当前运行的唯一事实源是 `research/manifest.json`；source registry、evidence notes、search log、comparability matrix、research gaps、download requests、`inbox/authorized-pdfs/` 和 handoff 都从它投影。Discovery 先记录 raw hits/provider-query coverage，按 DOI/title/version 去重，再执行 title、abstract、publication type、year 和 topic screening，明确 `INCLUDE`/`EXCLUDE`/`MAYBE` 及 primary/secondary/background/excluded role；只有相关候选进入全文队列。真实运行先生成 `research/configuration-preflight.md`；硬门槛是 confirmed brief、实际可用 discovery provider 和可验证 parser，Unpaywall、CORE、PubChem、ChEBI、Europe PMC 缺失只记录 optional degradation，不会阻塞；能力状态区分 `CONFIGURED`、`REACHABLE` 和 `USABLE_RESULTS`。它实现 OpenAlex、Semantic Scholar、Crossref、PubChem、ChEBI、Unpaywall、Europe PMC、CORE 和 MinerU 的可配置接口。公开、直接且授权明确的 PDF 可自动下载；受限或授权不清的论文只生成合法下载地址和用户等待动作。Research 结果是 `READY_FOR_SYNTHESIS`、`WAITING_FOR_USER` 或 `RESEARCH_GAP`。
+Research 读取 `preflight.md`、`discovery-and-screening.md`、`evidence-and-handoff.md`。先把网络、检索、合法全文和解析能力做一个简短的可用性检查；缺配置时说明影响和官方配置入口，`configure_and_continue` 只表示配置后回来，不能偷偷开始正式研究。正式开始、候选集和 handoff 都用 Markdown 与用户确认。缺全文时给合法下载路径和放置位置，不绕过访问控制。
 
-Research 会从已确认 brief 的 frontmatter/行内 `Topic:` 提取主题，并把核心论点拆成有限的短检索词，避免将整句研究问题发送给 provider。MinerU 是正式主解析器，命令适配器首选 `--input-dir` 批处理接口并兼容单 PDF wrapper；配置预检只有在项目内已授权 PDF 真实解析探针通过后才标记 MinerU 为 `READY`，没有探针文件或解析失败会明确标记为 `NOT_VERIFIED`/`FAILED`。`pdftotext` 是明确标注 `LOW_FIDELITY_FALLBACK` 的本地降级；原始 PDF 始终是来源权威，解析文本只是带 locator 的阅读辅助。凭据只能来自环境变量或未跟踪 env 文件，真实值不进入仓库、handoff 或 cache；provider 返回的 credential-bearing signed URL 也不会持久化，会显示 `WITHHELD_CREDENTIAL_BEARING_URL` 并要求重新获取不含凭据的合法 URL。
+Synthesis 读取 `planning.md`、`drafting.md`、`handoff.md`。先提出轻量写作计划，再以 `draft.md` 作为唯一内容基线，按需要生成读者版和研究版。来源事实、模型综合、假设、UNKNOWN、NOT_COMPARABLE 和 Chemical GAP 要说清楚，但不需要内部 payload 或程序字段。
 
-Synthesis 读取确认后的 Intent 和 Research 文档，写唯一内容源 `draft.md`，并从同一输入生成面向读者的 `reader-draft.md` 和带主张层级/locator 的 `research-draft.md`；三者不能各自独立演化。Research 只有在原始 PDF 核验后写入 `VERIFIED_SOURCE_FACT [identity @ locator]: claim`，Synthesis 才接受对应且内容一致的 `SOURCE_FACT`。正文还保留 `MODEL_SYNTHESIS`、`MODEL_HYPOTHESIS`、`UNKNOWN`、`NOT_COMPARABLE` 和 `Chemical GAP`；研究缺口下只允许明确标记的 unreviewed、evidence-bounded、partial-scope 候选稿。
+QA 读取 `reviewers.md`、`arbiter.md`、`revision-routing.md`。主会话可开四个互不污染的 fresh sub-agent，分别看证据定位、化学可比性、论证反驳和过度主张；arbiter 汇总冲突，研究者用普通语言决定接受、拒绝、暂缓以及返回哪个阶段。QA 不投票、不自动改稿。
 
-QA 为同一版输入准备四个互不污染的干净上下文：evidence/locator、chemistry comparability/mechanism、synthesis novelty/rebuttal、overclaim/counterexample。arbiter 写 `qa/review-report.md`、`qa/qa-plan.md`、`qa/revision-plan.md`，保留冲突并把修改路由回 Intent、Research 或 Synthesis；不通过投票替人类接受科学结论。
+### 上下文边界
 
-## 验证
+尽量不要在全局或父目录约定中强制模型读取与当前综述无关的 memory、历史项目、旧 workflow 或凭据。只加载当前项目、当前阶段及用户明确允许的材料；需要额外背景时由研究者点名。这样能让本 skill 的自然语言规则保持足够权重。
+
+### 证据边界
+
+文档建议保留来源 identity、locator、比较口径和未知项，并把具体来源事实与模型推断分开。它们是帮助研究者复核的轻量护栏，不是把每一步锁成二进制 gate；对来源、全文和科学结论的最终接受仍由人类研究者决定。
+
+## 本地检查
 
 ```bash
-python -m unittest discover -s tests -p 'test_*.py'
 python scripts/build_plugin.py --check
 python scripts/validate_plugin_package.py
-python scripts/package_plugin.py
+python -m unittest discover -s tests -p 'test_*.py'
+python -B scripts/smoke_plugin.py
 ```
 
-工程绿灯不等于 Product Use、PUBLIC_E2E、HUMAN_ACCEPTANCE 或科学有效性；这些边界必须分开报告。
-当前边界记录见 [`docs/v2-acceptance-report.md`](docs/v2-acceptance-report.md)。
+这些命令只验证 Markdown bundle、manifest 和发布边界；它们不会启动 Chemical Review，也不会声称完成一次真实文献综述。
 
 ## 许可证
 
