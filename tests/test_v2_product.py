@@ -89,16 +89,71 @@ class LightweightChemicalReviewTests(unittest.TestCase):
         ):
             self.assertIn(marker, result)
 
+    def test_intent_advisory_is_opt_in_isolated_and_two_step(self):
+        skill = CANONICAL / "chemical-review-intent"
+        main = (skill / "SKILL.md").read_text(encoding="utf-8").lower()
+        expert = (skill / "expert-review.md").read_text(encoding="utf-8").lower()
+        contract = (skill / "brief-contract.md").read_text(encoding="utf-8").lower()
+        result = (skill / "result-and-revision.md").read_text(encoding="utf-8").lower()
+
+        for marker in (
+            "explicitly asked",
+            "only after",
+            "confirmed brief",
+            "fresh",
+            "role prompt",
+            "allowlist",
+            "do not browse",
+            "do not call providers",
+            "hidden context",
+            "do not edit",
+        ):
+            self.assertIn(marker, main + expert)
+        for marker in (
+            "grouped",
+            "module",
+            "severity",
+            "rationale",
+            "suggested change",
+            "confidence",
+            "unresolved questions",
+            "skip",
+            "accept selected",
+            "reject all",
+            "defer",
+            "unconfirmed proposal",
+            "second explicit confirmation",
+        ):
+            self.assertIn(marker, expert + contract)
+        for marker in (
+            "timeout",
+            "unavailable",
+            "malformed",
+            "canonical brief unchanged",
+            "report the reason",
+        ):
+            self.assertIn(marker, expert + contract + result)
+
     def test_research_documents_are_guidance_not_a_scripted_gate(self):
         skill = CANONICAL / "chemical-review-research"
         main = (skill / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("preflight.md", main)
         self.assertIn("discovery-and-screening.md", main)
+        self.assertIn("candidate-acceptance.md", main)
         self.assertIn("evidence-and-handoff.md", main)
         self.assertIn("Markdown", main)
-        self.assertIn("configure_and_continue", (skill / "preflight.md").read_text(encoding="utf-8"))
-        self.assertIn("confirm_formal_start", (skill / "preflight.md").read_text(encoding="utf-8"))
+        preflight = (skill / "preflight.md").read_text(encoding="utf-8")
+        discovery = (skill / "discovery-and-screening.md").read_text(encoding="utf-8")
+        acceptance = (skill / "candidate-acceptance.md").read_text(encoding="utf-8")
+        self.assertIn("configure_and_continue", preflight)
+        self.assertIn("confirm_formal_start", preflight)
+        for marker in ("pass", "failure", "not-verified", "official", "rerun"):
+            self.assertIn(marker, preflight.lower())
         self.assertIn("accept_candidates", (skill / "discovery-and-screening.md").read_text(encoding="utf-8"))
+        for marker in ("raw hits", "stable identity", "coverage", "MAYBE", "false-positive", "primary"):
+            self.assertIn(marker.lower(), discovery.lower())
+        for marker in ("high-impact checkpoint", "accept", "return", "full-text", "only accepted"):
+            self.assertIn(marker.lower(), acceptance.lower())
         self.assertIn("SOURCE_EXCERPT", (skill / "evidence-and-handoff.md").read_text(encoding="utf-8"))
         self.assertNotIn("manifest.json", main)
 
