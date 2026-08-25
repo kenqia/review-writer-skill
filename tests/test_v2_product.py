@@ -140,6 +140,7 @@ class LightweightChemicalReviewTests(unittest.TestCase):
         self.assertIn("preflight.md", main)
         self.assertIn("discovery-and-screening.md", main)
         self.assertIn("candidate-acceptance.md", main)
+        self.assertIn("full-text-and-resume.md", main)
         self.assertIn("evidence-and-handoff.md", main)
         self.assertIn("Markdown", main)
         preflight = (skill / "preflight.md").read_text(encoding="utf-8")
@@ -157,6 +158,27 @@ class LightweightChemicalReviewTests(unittest.TestCase):
         self.assertIn("SOURCE_EXCERPT", (skill / "evidence-and-handoff.md").read_text(encoding="utf-8"))
         self.assertNotIn("manifest.json", main)
 
+    def test_research_evidence_keeps_legal_access_and_resume_boundaries(self):
+        skill = CANONICAL / "chemical-review-research"
+        full_text = (skill / "full-text-and-resume.md").read_text(encoding="utf-8")
+        evidence = (skill / "evidence-and-handoff.md").read_text(encoding="utf-8")
+        for marker in (
+            "legal download request",
+            "ambiguous",
+            "stable identity",
+            "authorized",
+            "SOURCE_EXCERPT",
+            "VERIFIED_SOURCE_FACT",
+            "original PDF",
+            "locator",
+            "parser probe",
+            "per-run",
+            "resume",
+        ):
+            self.assertIn(marker.lower(), full_text.lower() + evidence.lower())
+        for marker in ("UNKNOWN", "NOT_COMPARABLE", "Chemical GAP", "marginal", "uncovered", "budget", "retry"):
+            self.assertIn(marker.lower(), evidence.lower())
+
     def test_synthesis_documents_keep_one_draft_without_code_or_payloads(self):
         skill = CANONICAL / "chemical-review-synthesis"
         main = (skill / "SKILL.md").read_text(encoding="utf-8")
@@ -168,6 +190,21 @@ class LightweightChemicalReviewTests(unittest.TestCase):
         self.assertIn("SOURCE_FACT", drafting)
         self.assertIn("MODEL_SYNTHESIS", drafting)
         self.assertIn("MODEL_HYPOTHESIS", drafting)
+
+    def test_synthesis_keeps_plan_checkpoint_partial_scope_and_single_authority(self):
+        skill = CANONICAL / "chemical-review-synthesis"
+        main = (skill / "SKILL.md").read_text(encoding="utf-8")
+        planning = (skill / "planning.md").read_text(encoding="utf-8")
+        drafting = (skill / "drafting.md").read_text(encoding="utf-8")
+        handoff = (skill / "handoff.md").read_text(encoding="utf-8")
+        for marker in ("allowlist", "confirmed brief", "Research", "draft.md", "reader-draft.md", "research-draft.md"):
+            self.assertIn(marker.lower(), main.lower())
+        for marker in ("comparison spine", "evidence distribution", "gaps", "confirm", "before formal drafting"):
+            self.assertIn(marker.lower(), planning.lower())
+        for marker in ("conditions", "comparator", "denominator", "limitation", "partial-scope", "UNKNOWN", "NOT_COMPARABLE", "Chemical GAP"):
+            self.assertIn(marker.lower(), drafting.lower())
+        for marker in ("high-risk", "counterexample", "next action", "QA", "separate", "confirmation"):
+            self.assertIn(marker.lower(), handoff.lower())
 
     def test_qa_documents_describe_fresh_roles_and_human_feedback(self):
         skill = CANONICAL / "chemical-review-qa"
@@ -183,6 +220,23 @@ class LightweightChemicalReviewTests(unittest.TestCase):
             self.assertIn(disposition, routing)
         self.assertIn("普通语言", routing)
 
+    def test_qa_keeps_four_isolated_roles_incomplete_handling_and_traceable_findings(self):
+        skill = CANONICAL / "chemical-review-qa"
+        main = (skill / "SKILL.md").read_text(encoding="utf-8")
+        reviewers = (skill / "reviewers.md").read_text(encoding="utf-8")
+        arbiter = (skill / "arbiter.md").read_text(encoding="utf-8")
+        routing = (skill / "revision-routing.md").read_text(encoding="utf-8")
+        for marker in ("optional", "four", "fresh", "allowlist", "same revision", "incomplete", "cannot edit"):
+            self.assertIn(marker.lower(), (main + reviewers).lower())
+        for marker in ("evidence-locator", "chemistry-comparability", "synthesis-rebuttal", "overclaim-counterexample"):
+            self.assertIn(marker, reviewers)
+        for marker in ("claim", "paragraph", "locator", "severity", "rationale", "confidence", "earliest return stage", "suggested action"):
+            self.assertIn(marker.lower(), reviewers.lower())
+        for marker in ("conflict", "incomplete", "review-report", "qa-plan", "revision-plan", "not pass/fail"):
+            self.assertIn(marker.lower(), arbiter.lower())
+        for marker in ("accept", "reject", "defer", "Intent", "Research", "Synthesis", "ordinary language", "does not automatically"):
+            self.assertIn(marker.lower(), routing.lower())
+
     def test_plugin_manifest_and_projection_are_document_first(self):
         manifest = json.loads(
             (ROOT / "plugins" / "chemical-review" / ".codex-plugin" / "plugin.json").read_text(
@@ -193,6 +247,30 @@ class LightweightChemicalReviewTests(unittest.TestCase):
         description = manifest["interface"]["longDescription"].lower()
         self.assertIn("markdown", description)
         self.assertNotIn("retained scripts", description)
+
+    def test_fresh_project_acceptance_runbook_covers_public_boundary_and_layered_claims(self):
+        runbook = (ROOT / "docs" / "v2-fresh-project-acceptance.md").read_text(encoding="utf-8")
+        report = (ROOT / "docs" / "v2-acceptance-report.md").read_text(encoding="utf-8")
+        for marker in (
+            "topic-only",
+            "configure_and_continue",
+            "formal Research start",
+            "candidate",
+            "legal download request",
+            "SOURCE_EXCERPT",
+            "VERIFIED_SOURCE_FACT",
+            "synthesis-plan.md",
+            "draft.md",
+            "Incomplete QA",
+            "earliest affected stage",
+            "pressure",
+            "Product Use",
+            "HUMAN_ACCEPTANCE",
+            "scientific validity",
+            "journal acceptance",
+        ):
+            self.assertIn(marker.lower(), runbook.lower())
+        self.assertIn("v2-fresh-project-acceptance.md", report)
 
 
 if __name__ == "__main__":
