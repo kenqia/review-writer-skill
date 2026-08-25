@@ -289,6 +289,19 @@ class LightweightChemicalReviewTests(unittest.TestCase):
             self.assertIn(marker.lower(), result.lower())
         self.assertIn("OBSERVED — CONTROLLED FIXTURE", report)
 
+    def test_committed_fresh_project_fixture_contains_advisory_two_step_evidence(self):
+        fixture = ROOT / "tests" / "fixtures" / "v2-fresh-project"
+        self.assertTrue((fixture / "intent" / "advisory-findings.md").is_file())
+        proposal = (fixture / "intent" / "review-brief.proposed.md").read_text(encoding="utf-8")
+        before = (fixture / "intent" / "review-brief.before-advisory.md").read_text(encoding="utf-8")
+        after = (fixture / "intent" / "review-brief.after-second-confirmation.md").read_text(encoding="utf-8")
+        result = (fixture / "intent-result.md").read_text(encoding="utf-8")
+        for marker in ("UNCONFIRMED_PROPOSAL", "second explicit confirmation", "canonical", "snapshot"):
+            self.assertIn(marker.lower(), (proposal + before + after + result).lower())
+        self.assertIn("opt-in", result.lower())
+        self.assertIn("SOURCE_EXCERPT", (fixture / "research" / "evidence-ledger.md").read_text(encoding="utf-8"))
+        self.assertIn("Incomplete QA", (fixture / "qa" / "review-report.md").read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,10 +4,10 @@
 
 ## Run setup
 
-- Fresh project fixture：临时隔离目录，初始输入只有 topic-only 消息、`allowlist/chemistry-note.md`、一份受控 capability 结果和一份人工构造的公开 fixture PDF。
+- Fresh project fixture：临时隔离目录，初始输入只有 topic-only 消息、`allowlist/chemistry-note.md`、一份受控 capability 结果和一份人工构造的公开 fixture PDF；运行后已将可复现材料提交到 [`tests/fixtures/v2-fresh-project/`](../tests/fixtures/v2-fresh-project/)。
 - PDF check：`file` 识别为 PDF 1.4；`pdfinfo` 报告 1 page、未加密、版本 1.4。
 - Public entrypoints read：Intent、Research、Synthesis、QA 四个 `SKILL.md`，随后按 companion routing 只读取当前阶段所需文档。
-- Durable fixture artifacts：24 个 Markdown/PDF 文件，包括 confirmed brief、Intent result summary、preflight、candidate acceptance、progress、download request、evidence ledger、Research handoff、synthesis plan、canonical draft、两个 projections 和四个 reviewer reports/QA materials。
+- Durable fixture artifacts：当前 committed bundle 包含 28 个 Markdown/PDF 文件，包括 confirmed brief、Intent result summary、advisory skip 与 opt-in 两条分支、`UNCONFIRMED_PROPOSAL`、二次确认后的 revision snapshot、preflight、candidate acceptance、progress、download request、evidence ledger、Research handoff、synthesis plan、canonical draft、两个 projections 和四个 reviewer reports/QA materials。
 - Context scan：fixture 中没有 token、API key、cookie、session、signed URL、hidden context 或 sibling checkout material。
 
 ## Observed path
@@ -16,6 +16,7 @@
 | --- | --- | --- |
 | Intent topic-only → confirmed brief | PASS | `review-brief.md`、`intent-result.md`；target journal 保留 `UNKNOWN`，确认来源明确 |
 | Optional advisory skip | PASS | `intent-result.md` 记录明确 skip；canonical brief 未被 advisory 改写 |
+| Optional advisory opt-in/proposal | PASS | `intent/advisory-findings.md`、`review-brief.proposed.md` 和 before/after snapshots；BF-001 selected，二次确认前 canonical 不变，确认后 revision 2 保留旧 snapshot |
 | Preflight and configuration wait | PASS | `research/preflight.md` 逐行记录 pass/not-verified、影响、setup、rerun；`configure_and_continue` 分支停在等待，之后另行确认 formal start |
 | Discovery and candidate acceptance | PASS | `search-log.md`、`candidates.md`、`candidate-acceptance.md`；F-002 review-only 被排除，F-003 docking-only 保持 MAYBE，只有 F-001 被接受 |
 | Legal full text and binding | PASS | `download-requests.md` 给出 claim、合法 URL、建议文件名、authorized inbox 和 next action；fixture PDF 绑定到稳定 identity |
@@ -32,6 +33,7 @@
 - `draft.md` 是唯一 canonical baseline；`reader-draft.md` 和 `research-draft.md` 被记录为 projections，QA 没有改写 draft 或推进 Delivery。
 - 缺失/错误 reviewer 被报告为 `Incomplete QA`，没有被剩余角色冒充完整 QA。
 - 以 confirmed brief、stage summaries 和 allowlist 重新读取时，路径能识别已知缺口；没有上一轮聊天历史也没有自动补上下文。
+- advisory opt-in 分支只把 role prompt、confirmed brief 和 allowlisted note 交给 reviewer；selected finding 先进入 `UNCONFIRMED_PROPOSAL`，二次确认前没有 canonical mutation，确认后旧 brief snapshot 仍可恢复。
 
 ## Layered result
 
@@ -43,4 +45,4 @@
 | Scientific validity | NOT_ASSERTED | fixture 不证明化学结论、证据穷尽性或比较成立 |
 | Journal acceptance | NOT_CLAIMED | 本产品不预测期刊接收 |
 
-该结果把 #59 从“只有 runbook/静态 marker”提升为一次有记录的受控 document-boundary observation；it does not replace 真实研究者 Product Use、HUMAN_ACCEPTANCE 或科学审查。
+该结果把 #59 从“只有 runbook/静态 marker”提升为一次有记录、可复现 fixture bundle 的受控 document-boundary observation；it does not replace 真实研究者 Product Use、HUMAN_ACCEPTANCE 或科学审查。
