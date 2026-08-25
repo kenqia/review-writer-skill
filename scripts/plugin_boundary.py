@@ -24,7 +24,7 @@ V2_SKILL_FILES = {
         "agents/openai.yaml",
     }),
     "chemical-review-research": frozenset({
-        "SKILL.md", "preflight.md", "discovery-and-screening.md", "candidate-acceptance.md", "evidence-and-handoff.md",
+        "SKILL.md", "preflight.md", "discovery-and-screening.md", "candidate-acceptance.md", "full-text-and-resume.md", "evidence-and-handoff.md",
         "agents/openai.yaml",
     }),
     "chemical-review-synthesis": frozenset({
