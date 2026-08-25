@@ -1,6 +1,6 @@
 # Chemical Review Domain Modeling
 
-这份 companion 只维护当前综述真正需要的化学语言。先看项目已有 `CONTEXT.md`；出现同一个词的两种含义时，直接指出差异，请研究者选一个 canonical term，再继续。
+这份 companion 只维护当前综述真正需要的化学语言。只读取当前项目且在 Intent allowlist 内的 `CONTEXT.md` 或术语材料；不要扫描父目录、全局 memory、历史项目或 sibling checkout。出现同一个词的两种含义时，直接指出差异，请研究者选一个 canonical term，再继续。
 
 ## 用场景澄清词义
 
