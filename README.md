@@ -30,7 +30,7 @@ $chemical-review-qa
 
 ## 四个阶段
 
-Intent 用 `grilling.md` 和 `domain-modeling.md` 逐轮收敛 research question、范围、术语和证据期望，确认后写 `review-brief.md`；需要时再加载 `expert-review.md` 请 fresh sub-agent 做 advisory review。它只是建议，不接 provider，也不改 canonical brief。
+Intent 按 `grilling.md` 逐轮提出带推荐答案的 frontier 问题，并用 `brief-contract.md` 区分模型建议、用户回答、默认值和 `UNKNOWN`；`domain-modeling.md` 只在术语真正需要澄清时加载，`result-and-revision.md` 负责可读结果摘要与 revision snapshot。研究者明确确认 shared understanding 后才写 `review-brief.md`；需要时再加载 `expert-review.md` 请 fresh sub-agent 做 advisory review。它只是建议，不接 provider，也不改 canonical brief。
 
 Research 读取 `preflight.md`、`discovery-and-screening.md`、`evidence-and-handoff.md`。先把网络、检索、合法全文和解析能力做一个简短的可用性检查；缺配置时说明影响和官方配置入口，`configure_and_continue` 只表示配置后回来，不能偷偷开始正式研究。正式开始、候选集和 handoff 都用 Markdown 与用户确认。缺全文时给合法下载路径和放置位置，不绕过访问控制。
 

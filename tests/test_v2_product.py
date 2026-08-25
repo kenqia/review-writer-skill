@@ -54,10 +54,40 @@ class LightweightChemicalReviewTests(unittest.TestCase):
         grilling = (skill / "grilling.md").read_text(encoding="utf-8")
         self.assertIn("grilling.md", main)
         self.assertIn("domain-modeling.md", main)
+        self.assertIn("brief-contract.md", main)
+        self.assertIn("result-and-revision.md", main)
         self.assertIn("design tree", grilling)
         self.assertIn("推荐答案", grilling)
         self.assertIn("fresh sub-agent", main)
         self.assertIn("advisory", main)
+
+    def test_intent_preserves_answer_provenance_and_explicit_confirmation(self):
+        skill = CANONICAL / "chemical-review-intent"
+        grilling = (skill / "grilling.md").read_text(encoding="utf-8")
+        contract = (skill / "brief-contract.md").read_text(encoding="utf-8")
+        result = (skill / "result-and-revision.md").read_text(encoding="utf-8")
+        for marker in ("MODEL_QUESTION", "USER_ANSWER", "DEFAULT", "UNKNOWN"):
+            self.assertIn(marker, grilling)
+        for marker in (
+            "research question",
+            "core-claim candidates",
+            "scope",
+            "exclusions",
+            "audience",
+            "contribution",
+            "evidence expectations",
+            "explicit confirmation",
+            "review-brief.proposed.md",
+        ):
+            self.assertIn(marker, contract)
+        for marker in (
+            "stage result summary",
+            "revision snapshot",
+            "earliest affected stage",
+            "do not silently overwrite",
+            "WAITING_FOR_USER",
+        ):
+            self.assertIn(marker, result)
 
     def test_research_documents_are_guidance_not_a_scripted_gate(self):
         skill = CANONICAL / "chemical-review-research"

@@ -18,6 +18,8 @@ V2_SKILL_FILES = {
         "SKILL.md",
         "grilling.md",
         "domain-modeling.md",
+        "brief-contract.md",
+        "result-and-revision.md",
         "expert-review.md",
         "agents/openai.yaml",
     }),
