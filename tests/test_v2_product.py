@@ -272,6 +272,23 @@ class LightweightChemicalReviewTests(unittest.TestCase):
             self.assertIn(marker.lower(), runbook.lower())
         self.assertIn("v2-fresh-project-acceptance.md", report)
 
+    def test_fresh_project_acceptance_result_records_observed_fixture_run_and_limits_claims(self):
+        result = (ROOT / "docs" / "v2-fresh-project-acceptance-result-20260825.md").read_text(encoding="utf-8")
+        report = (ROOT / "docs" / "v2-acceptance-report.md").read_text(encoding="utf-8")
+        for marker in (
+            "controlled fixture",
+            "Public entrypoints read",
+            "configure_and_continue",
+            "Incomplete QA",
+            "OBSERVED — CONTROLLED FIXTURE",
+            "HUMAN_ACCEPTANCE",
+            "Scientific validity",
+            "Journal acceptance",
+            "does not replace",
+        ):
+            self.assertIn(marker.lower(), result.lower())
+        self.assertIn("OBSERVED — CONTROLLED FIXTURE", report)
+
 
 if __name__ == "__main__":
     unittest.main()

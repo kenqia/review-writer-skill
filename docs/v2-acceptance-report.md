@@ -9,7 +9,7 @@ Updated: 2026-08-25
 | Markdown bundle | PASS | 四个 skill 都由 `SKILL.md`、companion Markdown 和 agent manifest 构成。 |
 | Plugin projection | PASS | canonical source 与 `plugins/chemical-review/` 可由 build check 对齐。 |
 | Static package checks | PASS | manifest、发布文件边界和 cold-start smoke 可在本地验证。 |
-| Product Use | NOT_CLAIMED | 已提供 fresh-project 验收 runbook；尚未用研究者主题、合法全文和真实研究决策完成一次公开 Product Use。 |
+| Product Use | OBSERVED — CONTROLLED FIXTURE | 已执行并记录一次受控 fresh-project document-boundary run；这不是研究者主题上的公开 Product Use。 |
 | HUMAN_ACCEPTANCE | PENDING | 研究者仍需检查 brief、原始 PDF、证据 locator、draft 和 QA 冲突。 |
 | Scientific validity | NOT_ASSERTED | 本项目不认证化学结论、证据穷尽性、投稿准备度或期刊接收。 |
 
