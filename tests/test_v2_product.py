@@ -301,6 +301,16 @@ class LightweightChemicalReviewTests(unittest.TestCase):
         self.assertIn("opt-in", result.lower())
         self.assertIn("SOURCE_EXCERPT", (fixture / "research" / "evidence-ledger.md").read_text(encoding="utf-8"))
         self.assertIn("Incomplete QA", (fixture / "qa" / "review-report.md").read_text(encoding="utf-8"))
+        for path, marker in (
+            ("intent/advisory-reject-all.md", "reject all"),
+            ("intent/advisory-defer.md", "deferred"),
+            ("intent/advisory-timeout.md", "ADVISORY_TIMEOUT"),
+            ("intent/advisory-malformed.md", "ADVISORY_MALFORMED"),
+            ("research/preflight-failure.md", "failure"),
+            ("research/candidate-return.md", "return_to_discovery"),
+            ("research/ambiguous-binding.md", "UNKNOWN identity"),
+        ):
+            self.assertIn(marker.lower(), (fixture / path).read_text(encoding="utf-8").lower())
 
 
 if __name__ == "__main__":
