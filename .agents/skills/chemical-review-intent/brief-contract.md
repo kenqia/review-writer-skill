@@ -25,7 +25,11 @@
 
 展示 draft 后，暂停并请求研究者做 explicit confirmation of shared understanding。只有这次明确确认才可写入或更新 canonical `review-brief.md`，并在文件中记录确认轮次、研究者确认的范围和仍保留的 `UNKNOWN`。没有确认时，草案可以继续修改，但不得被 Research 当成 confirmed brief；可用 `WAITING_FOR_USER` 说明暂停原因。
 
-brief advisory 的选中建议先形成 `review-brief.proposed.md`，逐条说明建议、影响的字段、来源和研究者选择。研究者可以接受、改写、拒绝或暂缓全部建议；即使全部接受，也要再次明确确认后才能合并到 `review-brief.md`。超时、不可用、malformed 或缺少必要材料时，报告 advisory 不完整并保持 canonical brief 不变。
+confirmed brief 展示完毕后，主会话必须明确询问是否启动可选 brief advisory；这是独立的 opt-in checkpoint，不得由“继续”或默认值代替。Reviewer 只接收 role prompt、confirmed brief 和研究者明确 allowlist 的材料，且不得浏览、调用 provider、读取 hidden context 或编辑文件。结果按 actionable brief module 分组，每条 finding 都要有 severity、rationale、suggested change、confidence 和 unresolved questions；这些是建议，不是对来源或科学有效性的认证。
+
+研究者可以 `skip`（不运行）、`accept selected`（选择或改写部分 finding）、`reject all` 或 `defer`。接受的建议形成标为 `UNCONFIRMED_PROPOSAL` 的 `review-brief.proposed.md`，逐条说明 finding/module、影响的字段、来源边界、研究者选择和未决问题。即使全部接受，也必须再次明确确认“将 proposal 合并到 confirmed brief”后才能更新 `review-brief.md`；第二次确认前不得静默覆盖 canonical brief。拒绝、暂缓或未确认 proposal 都保持旧 brief 不变。
+
+Reviewer timeout、unavailable、malformed 或缺少必要材料时，报告 `ADVISORY_TIMEOUT`、`ADVISORY_UNAVAILABLE`、`ADVISORY_MALFORMED` 等具体原因和缺失部分，不能猜补、伪装成通过或生成 proposal，并保持 canonical brief 不变。是否重试或继续 Research 由研究者明确决定。
 
 ## 完成与恢复
 

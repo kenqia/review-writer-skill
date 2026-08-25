@@ -28,7 +28,13 @@ brief 至少说明 research question、core-claim candidates、scope、exclusion
 
 ## 可选的 brief advisory
 
-确认 brief 后，提醒研究者可选专家审查。研究者选择后才加载 [`expert-review.md`](expert-review.md)，把其中的 role prompt、confirmed brief 和明确 allowlist 的材料交给一个 fresh sub-agent。它只返回 advisory findings，不读隐藏上下文、不浏览、不调用 provider、不改文件。主会话展示建议；研究者可以跳过、拒绝、暂缓或选择建议。被选择的建议先写入 `review-brief.proposed.md`，再次明确确认后才影响 canonical brief；超时、不可用或格式不完整都保持 `review-brief.md` 不变。
+这条路线只能发生在 `review-brief.md` 已由研究者确认之后（only after a confirmed brief）。主会话先再次展示 confirmed brief，并 explicitly asks（明确询问）“是否运行可选 brief advisory？”；researcher is explicitly asked to opt in, and only a clear opt-in calls the reviewer. 含糊的“继续”或缺少回答都视为未选择。研究者明确选择跳过时，不创建 reviewer，直接报告 `ADVISORY_SKIPPED` 并继续 Research。
+
+研究者 opt-in 后才加载 [`expert-review.md`](expert-review.md)，把其中的 role prompt、confirmed brief 和研究者明确 allowlist 的材料交给一个 fresh、隔离的 sub-agent（fresh sub-agent）。输入包不包含父会话、hidden context、历史/memory 或未列出的文件。reviewer 只返回按 brief module 分组的 advisory findings；do not browse, do not call providers, do not inspect hidden context, and do not edit project artifacts。不读取凭据、不互读其他 reviewer；它也不是 Research、QA、同行评审或科学认证。主会话按模块展示 findings，并让研究者选择 `accept selected`、`reject all` 或 `defer`（也可逐条改写）；没有被接受的建议不进入提案。
+
+被接受的建议先形成带 `UNCONFIRMED_PROPOSAL` 标记的 unconfirmed proposal：写入 `review-brief.proposed.md`，逐条保留 finding、module、影响字段、研究者选择和未决问题。主会话随后展示整份 proposal，并再次请求对“将 proposal 合并到 confirmed brief”的明确 confirmation；第二次确认前绝不写入或覆盖 `review-brief.md`。研究者拒绝全部或暂缓时，canonical brief 保持不变并记录决定。
+
+reviewer timeout、unavailable、缺少 allowlisted material 或 malformed 输出都作为 advisory failure 如实报告原因（例如 `ADVISORY_TIMEOUT`、`ADVISORY_UNAVAILABLE`、`ADVISORY_MALFORMED`），不猜补 findings、不把失败当成通过，也不改变 `review-brief.md`。失败后的重试和是否继续 Research 仍由研究者决定。
 
 ## 完成与非完成
 
