@@ -1,12 +1,12 @@
 # Fresh-project document-boundary acceptance
 
-这是一份可重复的人类验收 runbook，不是中央 runner、隐藏 payload 或第二套状态机。它验证四个公开 Markdown-first skill 在一个全新项目目录中是否能依靠 documented artifacts 连续工作；执行者可以用真实可用工具，也可以使用受控的合法 PDF/capability fixtures。每次运行保留简短的输入 allowlist、观察、研究者决定和结果摘要，不把完整对话倾倒进仓库。
+这是一份可重复的人类验收 runbook，不是中央 runner、隐藏 payload 或第二套状态机。它验证五个核心 Markdown-first skill 及独立 Publication entrypoint 在一个全新项目目录中是否能依靠 documented artifacts 连续工作；执行者可以用真实可用工具，也可以使用受控的合法 PDF/capability fixtures。每次运行保留简短的输入 allowlist、观察、研究者决定和结果摘要，不把完整对话倾倒进仓库。
 
 ## Fixture 与边界
 
 准备一个只包含以下内容的新项目：topic-only 用户消息、一个明确 allowlisted 的 chemistry note、一个受控 capability probe 结果和一份合法 fixture PDF。不要放入全局 memory、历史 transcript、凭据、cookie、session 或 sibling checkout。fixture PDF 的 stable identity、版本、页码 locator 和访问依据必须可人工复核。
 
-每个 skill 从自己的 `SKILL.md` 开始，按 companion routing 渐进读取。阶段之间不举行额外 handoff 仪式；只把已持久化的 `review-brief.md`、stage result summary、Research evidence、`draft.md` 和 QA reports 作为下一步材料。
+每个 skill 从自己的 `SKILL.md` 开始，按 companion routing 渐进读取。阶段之间不举行额外 handoff 仪式；只把已持久化的 `review-brief.md`、stage result summary、Research evidence、Framework assets、`draft.md` 和 QA reports 作为下一步材料。
 
 ## 正常路径
 
@@ -16,8 +16,10 @@
 4. **Discovery / acceptance**：从互补路径留下 raw hits、deduplicated stable identities、coverage、筛选理由和 INCLUDE/EXCLUDE/MAYBE 角色。至少保留一条 review/background/docking-only/generic-AI false positive。研究者接受当前候选集前，不创建全文队列；接受后只路由 accepted candidates。
 5. **Full text / evidence**：对 fixture PDF 记录 access basis、binding、版本和 locator。对一个不可直接访问的候选写 legal download request，包含 claim、合法 URL、建议文件名、authorized inbox 和等待动作。parser probe 与 relevant-PDF per-run coverage 分开。解析摘录保持 `SOURCE_EXCERPT`；主 agent 对照原始 PDF 后才写 `VERIFIED_SOURCE_FACT`。
 6. **Research result**：写 evidence ledger、progress 和 `research-handoff.md`，说明 path coverage、marginal gain、uncovered areas、预算/retry、Chemical GAP、不可比较和是否只能 partial-scope。研究者单独确认 handoff 是否进入 Synthesis。
-7. **Synthesis**：只读 confirmed brief、Research-owned materials 和 explicit allowlist。先写 `synthesis-plan.md`，在 plan confirmation 前不开始 formal drafting。以唯一 `draft.md` 写一版批判性 synthesis；`reader-draft.md` / `research-draft.md` 只能是 projections。若 Research 不完整，稿件标记 `unreviewed; evidence-bounded; partial-scope`。研究者另行确认 draft 进入 QA。
-8. **QA**：默认启动四个 fresh reviewer，输入相同 revision 的 allowlisted brief/Research/draft/stage summary。检查 reviewer 不能互读或改稿；至少让一个 reviewer timeout/malformed，结果必须是该角度 `Incomplete QA`。arbiter 生成 `qa/review-report.md`、`qa/qa-plan.md`、`qa/revision-plan.md`，保留冲突和 locator 缺口。研究者用普通语言 accept/reject/defer，接受项路由到 earliest affected stage，QA 不自动改 draft 或推进 Delivery。
+7. **Framework**：读取 confirmed brief、Research handoff/evidence ledger、可信 MinerU 文本和 explicit allowlist。生成 `evidence-matrix.md`、`case-cards.md`、`comparison-map.md`、`judgment-framework.md` 和 `framework-handoff.md`；覆盖兼容、冲突/负结果和无共同终点的场景。研究者确认 Framework 边界或明确 skip；无共同终点时不得强行排名。
+8. **Synthesis**：读取适用 Framework 资产、confirmed brief、Research-owned materials 和 explicit allowlist。先写 `synthesis-plan.md`，在 plan confirmation 前不开始 formal drafting。以唯一 `draft.md` 写一版批判性 synthesis；`reader-draft.md` / `research-draft.md` 只能是 projections。若 Research 或 Framework 不完整，稿件用普通语言标记 `unreviewed; evidence-bounded; partial-scope`。研究者另行确认 draft 进入 QA。
+9. **QA**：默认启动四个 fresh reviewer，输入相同 revision 的 allowlisted brief/Research/Framework/draft/stage summary。检查 reviewer 不能互读或改稿；至少让一个 reviewer timeout/malformed，结果必须是该角度 `Incomplete QA`。arbiter 生成 `qa/review-report.md`、`qa/qa-plan.md`、`qa/revision-plan.md`，保留冲突和 locator 缺口。研究者用普通语言 accept/reject/defer，接受项路由到 earliest affected stage，QA 不自动改 draft 或推进 Delivery。
+10. **Publication（独立入口）**：用户主动提供 `draft.md` 和 allowlist，生成 `journal-manuscript.md` 与 `journal-manuscript.docx`。验证内部流程元数据移除而科学限制、假设、partial scope、引用和视觉来源关系保留；DOCX 是 projection，不是第二正文权威。无目标期刊走中性路径；有 confirmed target journal（目标期刊）时必须先确认再读取 official guidance。
 
 ## 压力场景（pressure scenarios）
 
@@ -31,6 +33,8 @@
 - projection/view 被修改：不得成为第二正文 authority，canonical `draft.md` 保持唯一基线；
 - 核心 brief/scope/evidence standard 改变：保留旧 snapshot，回到 earliest affected stage；
 - 独立重跑：只提供 confirmed brief、stage summary 和 allowlist，不提供上一轮聊天历史，仍能识别缺口并继续或请求材料。
+- Framework 缺少共同终点：不得自动排名；必须保留 `NOT_COMPARABLE`、证据地图、研究类型学和局部解释链。
+- Publication 清理：不得把模型假设变成来源事实，不得新增文献、删除限制或让 DOCX 成为第二正文权威。
 
 ## 结果分层
 

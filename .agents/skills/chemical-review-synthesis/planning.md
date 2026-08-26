@@ -1,6 +1,6 @@
 # Synthesis Planning
 
-先用一页左右的 `synthesis-plan.md` 说明准备怎样写，而不是立刻生成长稿。计划围绕研究问题、comparison spine（比较主轴）和比较关系组织，通常包含；它明确 what happens before formal drafting：
+先用一页左右的 `synthesis-plan.md` 说明准备怎样写，而不是立刻生成长稿。对于需要跨研究判断的综述，先读取并引用 Framework 的 `framework-handoff.md`、`comparison-map.md` 和 `judgment-framework.md`；若研究者明确跳过 Framework，计划必须说明因此降低的综合范围。计划围绕研究问题、comparison spine（比较主轴）和比较关系组织，通常包含；它明确 what happens before formal drafting：
 
 - 目标读者、预期贡献和文章结构；
 - 每一节要回答的子问题，以及要比较的对象、条件、终点和机制证据；

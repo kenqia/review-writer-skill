@@ -10,6 +10,7 @@ from scripts.plugin_boundary import V2_SKILL_FILES
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = ROOT / ".agents" / "skills"
 PLUGIN = ROOT / "plugins" / "chemical-review" / "skills"
+FIXTURE = ROOT / "tests" / "fixtures" / "v2-fresh-project"
 
 
 SKILL_BUNDLES = {
@@ -237,6 +238,306 @@ class LightweightChemicalReviewTests(unittest.TestCase):
         for marker in ("accept", "reject", "defer", "Intent", "Research", "Synthesis", "ordinary language", "does not automatically"):
             self.assertIn(marker.lower(), routing.lower())
 
+    def test_framework_documents_cover_generalized_judgment_and_non_comparability(self):
+        skill = CANONICAL / "chemical-review-framework"
+        main = (skill / "SKILL.md").read_text(encoding="utf-8")
+        intake = (skill / "intake-and-spine.md").read_text(encoding="utf-8")
+        cases = (skill / "cases-and-comparison.md").read_text(encoding="utf-8")
+        judgment = (skill / "judgment-and-boundaries.md").read_text(encoding="utf-8")
+        handoff = (skill / "handoff-and-revision.md").read_text(encoding="utf-8")
+        combined = "\n".join((main, intake, cases, judgment, handoff)).lower()
+        for marker in (
+            "confirmed brief",
+            "research handoff",
+            "allowlist",
+            "mineru",
+            "evidence matrix",
+            "case cards",
+            "comparison map",
+            "judgment framework",
+            "framework handoff",
+            "source identity",
+            "locator",
+            "judgment-changing",
+            "not_comparable",
+            "unknown",
+            "no defensible framework",
+            "testable",
+            "alternative explanation",
+            "applicability boundary",
+        ):
+            self.assertIn(marker, combined)
+        for marker in ("system", "variable", "context", "comparator", "endpoint", "limitation", "confounder"):
+            self.assertIn(marker, intake.lower())
+        for marker in ("agreement", "contradiction", "extension", "replication", "boundary"):
+            self.assertIn(marker, cases.lower())
+        for marker in ("evidence map", "research typology", "local explanation", "chemical gap"):
+            self.assertIn(marker, judgment.lower())
+
+    def test_framework_preserves_ownership_and_trusted_mineru_boundary(self):
+        skill = CANONICAL / "chemical-review-framework"
+        main = (skill / "SKILL.md").read_text(encoding="utf-8").lower()
+        intake = (skill / "intake-and-spine.md").read_text(encoding="utf-8").lower()
+        handoff = (skill / "handoff-and-revision.md").read_text(encoding="utf-8").lower()
+        for marker in (
+            "trusted source text",
+            "stable identity",
+            "auditable locator",
+            "parser-excerpt",
+            "does not prove",
+            "research owns",
+            "framework owns",
+            "synthesis reads",
+            "do not silently rewrite",
+            "research gap",
+            "return to research",
+            "same conversation",
+            "independent entry",
+        ):
+            self.assertIn(marker, main + intake + handoff)
+
+    def test_publication_documents_define_clean_projection_and_docx_boundary(self):
+        skill = CANONICAL / "chemical-review-publication"
+        main = (skill / "SKILL.md").read_text(encoding="utf-8")
+        clean = (skill / "clean-projection.md").read_text(encoding="utf-8")
+        journal = (skill / "journal-and-visuals.md").read_text(encoding="utf-8")
+        docx = (skill / "docx-and-boundary.md").read_text(encoding="utf-8")
+        combined = "\n".join((main, clean, journal, docx)).lower()
+        for marker in (
+            "draft.md",
+            "journal-manuscript.md",
+            "journal-manuscript.docx",
+            "user-invoked",
+            "one-time projection",
+            "canonical",
+            "allowlist",
+            "mineru",
+            "qa routing",
+            "evidence id",
+            "ordinary scientific language",
+            "limitations",
+            "model hypothesis",
+            "no new literature",
+            "no unsupported",
+            "target journal",
+            "official guidance",
+            "confirmation",
+            "language",
+            "translation",
+            "source-linked",
+            "ambiguous",
+            "openable",
+        ):
+            self.assertIn(marker, combined)
+        for marker in ("does not mutate", "second", "source of truth", "pre-qa", "journalized draft"):
+            self.assertIn(marker, docx.lower() + main.lower())
+
+    def test_publication_preserves_science_while_removing_process_metadata(self):
+        skill = CANONICAL / "chemical-review-publication"
+        clean = (skill / "clean-projection.md").read_text(encoding="utf-8").lower()
+        journal = (skill / "journal-and-visuals.md").read_text(encoding="utf-8").lower()
+        for marker in (
+            "source_fact",
+            "model_synthesis",
+            "model_hypothesis",
+            "unknown",
+            "not_comparable",
+            "chemical gap",
+            "partial-scope",
+            "evidence boundary",
+            "do not delete",
+            "do not change",
+            "figures",
+            "schemes",
+            "tables",
+            "caption",
+            "locator",
+            "citation",
+        ):
+            self.assertIn(marker, clean + journal)
+
+    def test_framework_product_use_fixture_covers_comparison_conflict_and_domain_variants(self):
+        framework = FIXTURE / "framework"
+        compatible = (framework / "evidence-matrix-compatible.md").read_text(encoding="utf-8")
+        domains = (framework / "domain-modules.md").read_text(encoding="utf-8")
+        cases = (framework / "case-cards.md").read_text(encoding="utf-8")
+        comparison = (framework / "comparison-map.md").read_text(encoding="utf-8")
+        for marker in (
+            "confirmed brief",
+            "stable identity",
+            "system",
+            "variable/intervention",
+            "context",
+            "comparator",
+            "endpoint and denominator",
+            "locator",
+            "limitation/confounder",
+            "applicability boundary",
+            "TRUSTED_SOURCE_TEXT",
+            "SOURCE_OBSERVATION",
+            "VERIFIED_SOURCE_FACT",
+            "MODEL_SYNTHESIS",
+            "MODEL_HYPOTHESIS",
+            "UNKNOWN",
+        ):
+            self.assertIn(marker.lower(), compatible.lower())
+        for marker in (
+            "organic synthesis",
+            "substrate class",
+            "materials chemistry",
+            "processing history",
+            "analytical chemistry",
+            "calibration",
+            "medicinal or chemical biology",
+            "no global hard schema",
+        ):
+            self.assertIn(marker.lower(), domains.lower())
+        for marker in (
+            "clear matched control",
+            "conflicting result",
+            "negative result",
+            "independent repeat",
+            "alternative",
+            "next test",
+            "limitation",
+        ):
+            self.assertIn(marker.lower(), cases.lower())
+        for marker in ("agreement", "contradiction", "extension", "replication", "boundary", "NOT_COMPARABLE"):
+            self.assertIn(marker.lower(), comparison.lower())
+
+    def test_framework_product_use_fixture_handles_no_common_endpoint_and_insufficient_evidence(self):
+        framework = FIXTURE / "framework"
+        no_common = (framework / "no-common-endpoint.md").read_text(encoding="utf-8").lower()
+        insufficient = (framework / "insufficient-evidence.md").read_text(encoding="utf-8").lower()
+        judgment = (framework / "judgment-framework.md").read_text(encoding="utf-8").lower()
+        handoff = (framework / "framework-handoff.md").read_text(encoding="utf-8").lower()
+        for marker in (
+            "evidence map",
+            "research typology",
+            "local explanation chain",
+            "not_comparable",
+            "chemical gap",
+            "no unified ranking",
+        ):
+            self.assertIn(marker, no_common)
+        for marker in (
+            "no defensible framework",
+            "research evidence gap",
+            "extraction gap",
+            "earliest targeted research action",
+            "stable identity",
+            "original pdf",
+            "source_fact",
+        ):
+            self.assertIn(marker, insufficient)
+        for marker in (
+            "central judgment",
+            "support",
+            "counterexample",
+            "alternative explanation",
+            "applicability boundary",
+            "testable question",
+            "explanation chain",
+            "chemical gap",
+        ):
+            self.assertIn(marker, judgment)
+        for marker in (
+            "inputs",
+            "completed",
+            "reusable",
+            "boundaries",
+            "researcher decision",
+            "next recommendation",
+            "stage result summary",
+        ):
+            self.assertIn(marker, handoff)
+
+    def test_publication_product_use_fixture_cleans_metadata_and_preserves_science(self):
+        publication = FIXTURE / "publication"
+        draft = (publication / "draft.md").read_text(encoding="utf-8")
+        manuscript = (publication / "journal-manuscript.md").read_text(encoding="utf-8")
+        draft_lower = draft.lower()
+        manuscript_lower = manuscript.lower()
+        for marker in (
+            "mineru parser status",
+            "4 pdf attachments",
+            "qa routing",
+            "evidence id",
+            "stage/unit",
+            "source_fact",
+            "model_synthesis",
+            "model_hypothesis",
+            "unknown",
+            "not_comparable",
+            "chemical gap",
+            "partial-scope",
+        ):
+            self.assertIn(marker.lower(), draft_lower)
+        for marker in (
+            "mineru",
+            "pdf attachments",
+            "qa routing",
+            "evidence id",
+            "stage/unit",
+            "source_fact",
+            "model_synthesis",
+            "model_hypothesis",
+        ):
+            self.assertNotIn(marker.lower(), manuscript_lower)
+        for marker in (
+            "42% to 78%",
+            "limited to the tested substrate class",
+            "negative result",
+            "cannot be ranked together",
+            "not structurally assigned",
+            "does not establish behavior",
+            "hypothesis",
+            "table",
+            "figure 1",
+            "references",
+        ):
+            self.assertIn(marker.lower(), manuscript_lower)
+        self.assertIn("partial-scope", draft_lower)
+        self.assertNotIn("partial-scope", manuscript_lower)
+        self.assertIn("current review does not establish", manuscript_lower)
+
+    def test_publication_product_use_fixture_covers_visuals_journal_branches_and_docx_boundary(self):
+        publication = FIXTURE / "publication"
+        visuals = (publication / "visual-assets.md").read_text(encoding="utf-8").lower()
+        neutral = (publication / "neutral-path.md").read_text(encoding="utf-8").lower()
+        target = (publication / "target-journal.md").read_text(encoding="utf-8").lower()
+        docx = (publication / "docx-acceptance.md").read_text(encoding="utf-8").lower()
+        for marker in (
+            "retain figure 1",
+            "source identity",
+            "caption",
+            "locator",
+            "citation",
+            "exclude figure 2",
+            "cross-paper composite",
+            "no new visual",
+        ):
+            self.assertIn(marker, visuals)
+        for marker in ("no target journal", "neutral review-article structure", "no claim", "official rule"):
+            self.assertIn(marker, neutral)
+        for marker in ("target journal", "must ask", "confirmation", "official author instructions", "access date"):
+            self.assertIn(marker, target)
+        for marker in (
+            "journal-manuscript.docx",
+            "exact inspected",
+            "opens as a real word document",
+            "title",
+            "table",
+            "references",
+            "uncertainty",
+            "not_comparable",
+            "partial-scope",
+            "does not claim",
+            "cannot generate or open docx",
+            "second source of truth",
+        ):
+            self.assertIn(marker, docx)
+
     def test_plugin_manifest_and_projection_are_document_first(self):
         manifest = json.loads(
             (ROOT / "plugins" / "chemical-review" / ".codex-plugin" / "plugin.json").read_text(
@@ -247,12 +548,22 @@ class LightweightChemicalReviewTests(unittest.TestCase):
         description = manifest["interface"]["longDescription"].lower()
         self.assertIn("markdown", description)
         self.assertNotIn("retained scripts", description)
+        self.assertIn("framework", description)
+        self.assertIn("publication", description)
+        prompts = " ".join(manifest["interface"]["defaultPrompt"]).lower()
+        self.assertIn("chemical-review-framework", prompts)
+        self.assertIn("chemical-review-publication", prompts)
 
     def test_fresh_project_acceptance_runbook_covers_public_boundary_and_layered_claims(self):
         runbook = (ROOT / "docs" / "v2-fresh-project-acceptance.md").read_text(encoding="utf-8")
         report = (ROOT / "docs" / "v2-acceptance-report.md").read_text(encoding="utf-8")
         for marker in (
             "topic-only",
+            "framework",
+            "evidence-matrix",
+            "case-cards",
+            "comparison-map",
+            "judgment-framework",
             "configure_and_continue",
             "formal Research start",
             "candidate",
@@ -268,6 +579,10 @@ class LightweightChemicalReviewTests(unittest.TestCase):
             "HUMAN_ACCEPTANCE",
             "scientific validity",
             "journal acceptance",
+            "journal-manuscript.md",
+            "journal-manuscript.docx",
+            "target journal",
+            "projection",
         ):
             self.assertIn(marker.lower(), runbook.lower())
         self.assertIn("v2-fresh-project-acceptance.md", report)

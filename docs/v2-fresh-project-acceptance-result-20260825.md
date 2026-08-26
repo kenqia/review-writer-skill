@@ -1,12 +1,12 @@
 # Fresh-project acceptance result — 2026-08-25
 
-这是对 [fresh-project document-boundary runbook](v2-fresh-project-acceptance.md) 的一次受控本地 fixture run。它验证的是公开 Markdown 边界和可读产物，不是一次真实化学综述，也没有调用外部 provider、登录服务或真实凭据。
+这是对 [fresh-project document-boundary runbook](v2-fresh-project-acceptance.md) 的一次受控本地 fixture run，记录于 2026-08-25。它主要记录当日的 Intent、Research、Synthesis 和 QA 基线；Framework/Publication 扩展后的补充 seam 结果见 [`framework-publication-acceptance-result-20260826.md`](framework-publication-acceptance-result-20260826.md)。这不是一次真实化学综述，也没有调用外部 provider、登录服务或真实凭据。
 
 ## Run setup
 
 - Fresh project fixture：临时隔离目录，初始输入只有 topic-only 消息、`allowlist/chemistry-note.md`、一份受控 capability 结果和一份人工构造的公开 fixture PDF；运行后已将可复现材料提交到 [`tests/fixtures/v2-fresh-project/`](../tests/fixtures/v2-fresh-project/)。
 - PDF check：`file` 识别为 PDF 1.4；`pdfinfo` 报告 1 page、未加密、版本 1.4。
-- Public entrypoints read：Intent、Research、Synthesis、QA 四个 `SKILL.md`，随后按 companion routing 只读取当前阶段所需文档。
+- 历史基线（2026-08-25）Public entrypoints read：Intent、Research、Synthesis、QA 四个 `SKILL.md`，随后按 companion routing 只读取当前阶段所需文档；这不是当前五核心入口的完整声明。
 - Durable fixture artifacts：当前 committed bundle 包含 35 个 Markdown/PDF 文件，包括 confirmed brief、Intent result summary、advisory skip/opt-in/reject/defer/timeout/malformed 分支、`UNCONFIRMED_PROPOSAL`、二次确认后的 revision snapshot、preflight pass/failure/not-verified、candidate acceptance/return、ambiguous binding、progress、download request、evidence ledger、Research handoff、synthesis plan、canonical draft、两个 projections 和四个 reviewer reports/QA materials。
 - Context scan：fixture 中没有 token、API key、cookie、session、signed URL、hidden context 或 sibling checkout material。
 
@@ -42,7 +42,7 @@
 | Layer | Result | Boundary |
 | --- | --- | --- |
 | Document/package engineering | OBSERVED PASS | 17 tests、projection check、package validation、bundled/install smoke、Ruff 全部通过 |
-| Product Use | OBSERVED — controlled fixture only | 四个公开 Markdown entrypoint 的正常路径、暂停、恢复和压力材料在本地 fixture 中可追踪 |
+| Product Use | OBSERVED — controlled fixture only | 历史基线的四个公开 Markdown entrypoint 正常路径、暂停、恢复和压力材料在本地 fixture 中可追踪；Framework/Publication 补充结果见 2026-08-26 报告 |
 | HUMAN_ACCEPTANCE | PENDING | 本次是 agent-run fixture；真实研究者仍需确认 brief、候选、原始 PDF、handoff、plan、draft 和 QA finding |
 | Scientific validity | NOT_ASSERTED | fixture 不证明化学结论、证据穷尽性或比较成立 |
 | Journal acceptance | NOT_CLAIMED | 本产品不预测期刊接收 |

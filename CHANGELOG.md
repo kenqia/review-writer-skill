@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — Framework and Publication projection
+
+- Add a generalized, Markdown-first Framework entry for evidence matrices, judgment-changing cases, comparison maps, bounded chemical judgments, and handoffs.
+- Add a user-invoked Publication entry for reader-ready Markdown and DOCX projections without changing the canonical draft or scientific claims.
+- Expand plugin package validation and fresh-project documentation to cover five core entries plus the independent Publication delivery boundary.
+
 ## Unreleased — Markdown-first cutover
 
 - Remove the four stage runners and their gate-heavy product tests from the skill

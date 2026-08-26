@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synchronize the four canonical v2 skills into the release projection."""
+"""Synchronize the canonical Chemical Review skills into the release projection."""
 
 from __future__ import annotations
 

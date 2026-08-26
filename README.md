@@ -7,7 +7,7 @@ Chemical Review 是一个轻量的化学文献综述 skill 包。它用自然语
 源码和发布 projection 都只包含 Markdown 规则与 agent manifest：
 
 ```text
-chemical-review-{intent,research,synthesis,qa}/
+chemical-review-{intent,research,framework,synthesis,qa,publication}/
 ├── SKILL.md                 # 这一阶段做什么、何时读取下面的文档
 ├── Markdown companion         # 该阶段的步骤、角色或交接规则
 └── agents/openai.yaml       # 展示名和默认提示
@@ -22,21 +22,27 @@ chemical-review-{intent,research,synthesis,qa}/
 ```text
 $chemical-review-intent
 $chemical-review-research
+$chemical-review-framework
 $chemical-review-synthesis
 $chemical-review-qa
+$chemical-review-publication
 ```
 
 没有必要一次调用全部阶段。每个阶段都可以先读自己的 `SKILL.md`，再按它指向的 companion 文档工作，并用普通语言把结果交回研究者。
 
-## 四个阶段
+## 五个核心入口与一个独立交付入口
 
 Intent 按 `grilling.md` 逐轮提出带推荐答案的 frontier 问题，并用 `brief-contract.md` 区分模型建议、用户回答、默认值和 `UNKNOWN`；`domain-modeling.md` 只在术语真正需要澄清时加载，`result-and-revision.md` 负责可读结果摘要与 revision snapshot。研究者明确确认 shared understanding 后才写 `review-brief.md`；需要时再加载 `expert-review.md` 请 fresh sub-agent 做 advisory review。它只是建议，不接 provider，也不改 canonical brief。
 
 Research 按语义需要读取 `preflight.md`、`discovery-and-screening.md`、`candidate-acceptance.md`、`full-text-and-resume.md`、`evidence-and-handoff.md`。先把网络、检索、合法全文和解析能力做一个简短的可用性检查；缺配置时说明影响和官方配置入口，`configure_and_continue` 只表示配置后回来，不能偷偷开始正式研究。正式开始、候选集和 handoff 都用 Markdown 与用户确认。缺全文时给合法下载路径和放置位置，不绕过访问控制；解析摘录在原始 PDF 和 locator 核验前不能成为来源事实。
 
-Synthesis 读取 `planning.md`、`drafting.md`、`handoff.md`。先提出轻量写作计划，再以 `draft.md` 作为唯一内容基线，按需要生成读者版和研究版。来源事实、模型综合、假设、UNKNOWN、NOT_COMPARABLE 和 Chemical GAP 要说清楚，但不需要内部 payload 或程序字段。
+Framework 位于 Research 与 Synthesis 之间，读取可信 MinerU 来源文本、Research handoff 和 confirmed brief，生成 evidence matrix、case cards、comparison map、judgment framework 和 handoff。它使用通用比较主轴加 brief 驱动领域模块；无共同终点时保留 `NOT_COMPARABLE` 和证据地图，不强行排名。
+
+Synthesis 读取适用的 Framework 资产以及 `planning.md`、`drafting.md`、`handoff.md`。先提出轻量写作计划，再以 `draft.md` 作为唯一内容基线，按需要生成读者版和研究版。来源事实、模型综合、假设、UNKNOWN、NOT_COMPARABLE 和 Chemical GAP 要说清楚，但不需要内部 payload 或程序字段。明确跳过 Framework 时，不能把稿件称为完整批判性综合。
 
 QA 读取 `reviewers.md`、`arbiter.md`、`revision-routing.md`。主会话可开四个互不污染的 fresh sub-agent，分别看证据定位、化学可比性、论证反驳和过度主张；arbiter 汇总冲突，研究者用普通语言决定接受、拒绝、暂缓以及返回哪个阶段。QA 不投票、不自动改稿。
+
+Publication 是用户主动调用的独立交付入口。它把 `draft.md` 投影为 `journal-manuscript.md` 与 `journal-manuscript.docx`，移除内部流程元数据但保留科学限制，不新增文献或改变核心判断；DOCX 不是第二正文权威。
 
 ### 上下文边界
 

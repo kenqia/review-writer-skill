@@ -1,4 +1,4 @@
-"""Fail-closed source and release boundary for Chemical Review v2."""
+"""Fail-closed source and release boundary for the Chemical Review bundle."""
 
 from __future__ import annotations
 
@@ -7,13 +7,19 @@ import json
 from pathlib import Path
 
 
-V2_SKILL_NAMES = (
+CORE_SKILL_NAMES = (
     "chemical-review-intent",
     "chemical-review-research",
+    "chemical-review-framework",
     "chemical-review-synthesis",
     "chemical-review-qa",
 )
-V2_SKILL_FILES = {
+DELIVERY_SKILL_NAMES = (
+    "chemical-review-publication",
+)
+PUBLIC_SKILL_NAMES = CORE_SKILL_NAMES + DELIVERY_SKILL_NAMES
+
+SKILL_FILES = {
     "chemical-review-intent": frozenset({
         "SKILL.md",
         "grilling.md",
@@ -27,13 +33,23 @@ V2_SKILL_FILES = {
         "SKILL.md", "preflight.md", "discovery-and-screening.md", "candidate-acceptance.md", "full-text-and-resume.md", "evidence-and-handoff.md",
         "agents/openai.yaml",
     }),
+    "chemical-review-framework": frozenset({
+        "SKILL.md", "intake-and-spine.md", "cases-and-comparison.md", "judgment-and-boundaries.md", "handoff-and-revision.md",
+        "agents/openai.yaml",
+    }),
     "chemical-review-synthesis": frozenset({
         "SKILL.md", "planning.md", "drafting.md", "handoff.md", "agents/openai.yaml",
     }),
     "chemical-review-qa": frozenset({
         "SKILL.md", "reviewers.md", "arbiter.md", "revision-routing.md", "agents/openai.yaml",
     }),
+    "chemical-review-publication": frozenset({
+        "SKILL.md", "clean-projection.md", "journal-and-visuals.md", "docx-and-boundary.md", "agents/openai.yaml",
+    }),
 }
+# Compatibility names retained for scripts and downstream checks written for v2.
+V2_SKILL_NAMES = PUBLIC_SKILL_NAMES
+V2_SKILL_FILES = SKILL_FILES
 RUNTIME_SKILL_FILES = frozenset(
     f"skills/{skill}/{relative}"
     for skill, files in V2_SKILL_FILES.items()
@@ -74,7 +90,7 @@ def resolve_plugin_skills(plugin_root: Path) -> PluginSkillResolution:
     except ValueError as error:
         raise _resolution_error("plugin skills path escapes the plugin root") from error
     paths: list[Path] = []
-    for skill_name in V2_SKILL_NAMES:
+    for skill_name in PUBLIC_SKILL_NAMES:
         skill_path = skills_root / skill_name
         skill_file = skill_path / "SKILL.md"
         if not skill_file.is_file():
