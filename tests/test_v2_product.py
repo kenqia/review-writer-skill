@@ -508,6 +508,11 @@ class LightweightChemicalReviewTests(unittest.TestCase):
             "Publication fixture must not add or drop literature identities",
         )
 
+    def test_synthesis_plan_uses_topic_appropriate_explanation_evidence(self):
+        planning = (CANONICAL / "chemical-review-synthesis" / "planning.md").read_text(encoding="utf-8").lower()
+        self.assertIn("适合该主题的解释证据", planning)
+        self.assertIn("只有在 brief 需要时才使用“机制”术语", planning)
+
     def test_publication_product_use_fixture_covers_visuals_journal_branches_and_docx_boundary(self):
         publication = FIXTURE / "publication"
         visuals = (publication / "visual-assets.md").read_text(encoding="utf-8").lower()
