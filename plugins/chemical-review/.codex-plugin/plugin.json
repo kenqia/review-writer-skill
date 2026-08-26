@@ -1,7 +1,7 @@
 {
   "name": "chemical-review",
-  "version": "0.1.0-beta.1",
-  "description": "An iterative research-companion workflow for critical narrative chemical literature reviews.",
+  "version": "0.2.0",
+  "description": "Five composable, evidence-governed chemistry skills plus an optional Markdown-to-DOCX publication projection.",
   "author": {
     "name": "Review Writer contributors",
     "url": "https://github.com/kenqia/review-writer-skill"
@@ -14,15 +14,17 @@
   "interface": {
     "displayName": "Chemical Review",
     "shortDescription": "Iteratively develop a critical chemical literature review.",
-    "longDescription": "Treats the model as a research companion across Grill, Research, Prototype, PRD, Issues, Implement, and Review, with human feedback routed into later iterations. It does not claim scientific validity or journal acceptance.",
+    "longDescription": "A lightweight set of five composable Markdown-first skills for shaping, researching, building a generalized chemical judgment Framework, drafting, and discussing a critical chemical literature review, plus an optional Publication projection to journal-readable Markdown and DOCX. The researcher keeps scientific judgement; the plugin does not claim validity or journal acceptance.",
     "developerName": "Review Writer contributors",
     "category": "Research",
     "capabilities": ["Interactive", "Research", "Write"],
     "websiteURL": "https://github.com/kenqia/review-writer-skill",
     "defaultPrompt": [
-      "Use $chemical-review to develop a critical chemical literature review.",
-      "Use $chemical-review to continue an existing review project.",
-      "Use $chemical-review to route human review feedback into the next iteration."
+      "Use $chemical-review-intent to define and confirm a chemistry review brief.",
+      "Use $chemical-review-research with its preflight, discovery, and evidence Markdown companions to make the evidence route visible.",
+      "Use $chemical-review-framework after Research to build an evidence matrix, judgment-changing cases, comparison map, and bounded chemical judgments.",
+      "Use $chemical-review-synthesis and $chemical-review-qa to discuss one draft, independent observations, and the next revision in Markdown.",
+      "Use $chemical-review-publication on an approved draft to produce a clean journal-manuscript.md and journal-manuscript.docx projection."
     ]
   }
 }

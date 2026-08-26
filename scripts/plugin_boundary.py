@@ -1,33 +1,112 @@
-"""Canonical file boundary for the Chemical Review plugin projection."""
+"""Fail-closed source and release boundary for the Chemical Review bundle."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+import json
 from pathlib import Path
 
 
-# This is deliberately a list of runtime files, not an extension-based rule.
-# Adding a new runtime asset requires an explicit review of the release
-# boundary and a change here.
-RUNTIME_SKILL_FILES = frozenset(
-    {
+CORE_SKILL_NAMES = (
+    "chemical-review-intent",
+    "chemical-review-research",
+    "chemical-review-framework",
+    "chemical-review-synthesis",
+    "chemical-review-qa",
+)
+DELIVERY_SKILL_NAMES = (
+    "chemical-review-publication",
+)
+PUBLIC_SKILL_NAMES = CORE_SKILL_NAMES + DELIVERY_SKILL_NAMES
+
+SKILL_FILES = {
+    "chemical-review-intent": frozenset({
         "SKILL.md",
-        "WORKFLOW.md",
-        "ASSET-TEMPLATES.md",
+        "grilling.md",
+        "domain-modeling.md",
+        "brief-contract.md",
+        "result-and-revision.md",
+        "expert-review.md",
         "agents/openai.yaml",
-        "feedback.py",
-        "orchestrator.py",
-        "prototype.py",
-        "references/research-tools.md",
-        "research.py",
-        "review.py",
-        "units.py",
-    }
+    }),
+    "chemical-review-research": frozenset({
+        "SKILL.md", "preflight.md", "discovery-and-screening.md", "candidate-acceptance.md", "full-text-and-resume.md", "evidence-and-handoff.md",
+        "agents/openai.yaml",
+    }),
+    "chemical-review-framework": frozenset({
+        "SKILL.md", "intake-and-spine.md", "cases-and-comparison.md", "judgment-and-boundaries.md", "handoff-and-revision.md",
+        "agents/openai.yaml",
+    }),
+    "chemical-review-synthesis": frozenset({
+        "SKILL.md", "planning.md", "drafting.md", "handoff.md", "agents/openai.yaml",
+    }),
+    "chemical-review-qa": frozenset({
+        "SKILL.md", "reviewers.md", "arbiter.md", "revision-routing.md", "agents/openai.yaml",
+    }),
+    "chemical-review-publication": frozenset({
+        "SKILL.md", "clean-projection.md", "journal-and-visuals.md", "docx-and-boundary.md", "agents/openai.yaml",
+    }),
+}
+# Compatibility names retained for scripts and downstream checks written for v2.
+V2_SKILL_NAMES = PUBLIC_SKILL_NAMES
+V2_SKILL_FILES = SKILL_FILES
+RUNTIME_SKILL_FILES = frozenset(
+    f"skills/{skill}/{relative}"
+    for skill, files in V2_SKILL_FILES.items()
+    for relative in files
 )
 PLUGIN_ROOT_FILES = frozenset({".codex-plugin/plugin.json", "LICENSE", "README.md"})
 
 
+def _resolution_error(message: str) -> ValueError:
+    return ValueError("HUMAN_ACTION_REQUIRED: " + message)
+
+
+@dataclass(frozen=True)
+class PluginSkillResolution:
+    plugin_id: str
+    version: str
+    skill_path: Path
+    skill_paths: tuple[Path, ...]
+
+
+def resolve_plugin_skills(plugin_root: Path) -> PluginSkillResolution:
+    root = plugin_root.resolve()
+    manifest_path = root / ".codex-plugin" / "plugin.json"
+    if not manifest_path.is_file():
+        raise _resolution_error("plugin manifest is missing; reinstall the Chemical Review plugin")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise _resolution_error("plugin manifest is unreadable; reinstall the Chemical Review plugin") from error
+    plugin_id = str(manifest.get("name", "")).strip()
+    version = str(manifest.get("version", "")).strip()
+    skills_value = str(manifest.get("skills", "")).strip()
+    if plugin_id != "chemical-review" or not version or skills_value != "./skills/":
+        raise _resolution_error("plugin manifest does not identify the Chemical Review skill pack")
+    skills_root = (root / skills_value).resolve()
+    try:
+        skills_root.relative_to(root)
+    except ValueError as error:
+        raise _resolution_error("plugin skills path escapes the plugin root") from error
+    paths: list[Path] = []
+    for skill_name in PUBLIC_SKILL_NAMES:
+        skill_path = skills_root / skill_name
+        skill_file = skill_path / "SKILL.md"
+        if not skill_file.is_file():
+            raise _resolution_error(f"bundled skill is missing: {skill_name}")
+        if f"name: {skill_name}" not in skill_file.read_text(encoding="utf-8"):
+            raise _resolution_error(f"bundled skill identity does not match: {skill_name}")
+        paths.append(skill_path)
+    return PluginSkillResolution(plugin_id, version, skills_root, tuple(paths))
+
+
+def resolve_plugin_skill(plugin_root: Path) -> PluginSkillResolution:
+    """Compatibility spelling that now resolves the complete v2 pack."""
+    return resolve_plugin_skills(plugin_root)
+
+
 def relative_files(root: Path) -> dict[str, Path]:
-    """Return all regular files under ``root`` keyed by POSIX path."""
     if not root.is_dir():
         raise FileNotFoundError(f"directory does not exist: {root}")
     files: dict[str, Path] = {}
@@ -43,7 +122,6 @@ def relative_files(root: Path) -> dict[str, Path]:
 
 
 def assert_exact_files(files: dict[str, Path], expected: frozenset[str], *, label: str) -> None:
-    """Fail closed when a source or release tree contains an unknown file."""
     actual = set(files)
     missing = sorted(expected - actual)
     unexpected = sorted(actual - expected)
@@ -54,3 +132,7 @@ def assert_exact_files(files: dict[str, Path], expected: frozenset[str], *, labe
         if unexpected:
             details.append(f"unexpected {label} files: {', '.join(unexpected)}")
         raise ValueError("; ".join(details))
+
+
+def expected_release_files() -> frozenset[str]:
+    return PLUGIN_ROOT_FILES | RUNTIME_SKILL_FILES

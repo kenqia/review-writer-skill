@@ -1,0 +1,13 @@
+# Framework fixture — compatible comparison
+
+Input scope: confirmed `review-brief.md` (fixture round 1), Research handoff revision 1, and the three allowlisted studies F-001, F-004, and F-005. The MinerU text is trusted as a source representation because each study has a stable identity and an auditable page locator. No hidden history or unlisted draft was read.
+
+The universal spine is used first; the organic module adds substrate class, catalyst state, ligand, selectivity, yield, and mechanistic probe only because the confirmed brief asks about those variables.
+
+| Study | system | variable/intervention | context | comparator | endpoint and denominator | direct observation | locator | limitation/confounder | applicability boundary | evidence role |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| F-001 / DOI:10.0000/fixture-a | aryl chloride + amine, catalyst A | ligand L1 versus no ligand | 80 °C, dioxane, 2 h, 0.10 mmol | matched no-ligand control | isolated yield, product mmol / substrate mmol | L1 increased isolated yield from 42% to 78% | F-001, p. 2, Table 1 | catalyst loading was not varied; selectivity denominator is not reported | only the named substrate class and temperature window | SOURCE_OBSERVATION; TRUSTED_SOURCE_TEXT |
+| F-004 / DOI:10.0000/fixture-d | same substrate class, catalyst A | ligand L1 versus ligand L2 | 80 °C, dioxane, 2 h, 0.10 mmol | matched L2 control | isolated yield, same denominator and work-up | L1 gave 75% and L2 gave 51% | F-004, p. 3, Figure 2 and Table S4 | one substrate was used; no in situ speciation measurement | does not establish transfer to other catalyst states | VERIFIED_SOURCE_FACT; SOURCE_OBSERVATION |
+| F-005 / DOI:10.0000/fixture-e | same substrate class, catalyst A | ligand L1 | 80 °C, dioxane, 2 h, 0.10 mmol | independent no-ligand repeat | isolated yield, same denominator | independent repeat gave 73% | F-005, p. 4, Table 2 | independent team used a different purification cartridge | supports local replication, not universal ranking | SOURCE_OBSERVATION; MODEL_SYNTHESIS |
+
+The three rows share a defensible endpoint and matched conditions closely enough for a local comparison. The matrix does not convert the observations into a universal ligand ranking. Selectivity denominator for F-001 is `UNKNOWN`; it is not silently inferred from isolated yield. `MODEL_SYNTHESIS`: within this fixture's catalyst-A/substrate-class window, L1 is consistently associated with higher isolated yield than the listed comparators. `MODEL_HYPOTHESIS`: the difference may involve catalyst speciation, but that explanation remains unverified.

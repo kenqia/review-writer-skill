@@ -1,109 +1,87 @@
-# Review Writer — Chemical Review plugin
+# Review Writer — Chemical Review
 
-这是 Chemical Review 的唯一开发源码仓。仓库同时维护一个可验证的
-`plugins/chemical-review/` Codex plugin 发布单元，但它不是把整个开发仓
-直接当成用户产品。
+Chemical Review 是一个轻量的化学文献综述 skill 包。它用自然语言 Markdown 帮助研究者把想法变成可讨论的 brief、证据笔记、候选正文和 QA 反馈；不依赖阶段 runner、脚本状态机或 provider 接入，也不替研究者做最终科学判断。
 
-## 当前定位
+## 包的形状
 
-当前版本目标是 `0.1.0-beta.1`：实验性、可人工迭代的化学文献综述研究同伴。
-它可以帮助研究者从主题出发，经过
+源码和发布 projection 都只包含 Markdown 规则与 agent manifest：
 
-`Grill → Research → Prototype → PRD → Issues → Implement → Review`
+```text
+chemical-review-{intent,research,framework,synthesis,qa,publication}/
+├── SKILL.md                 # 这一阶段做什么、何时读取下面的文档
+├── Markdown companion         # 该阶段的步骤、角色或交接规则
+└── agents/openai.yaml       # 展示名和默认提示
+```
 
-逐步形成干净稿、研究者标注版、审查报告和候选投稿包；它不证明科学有效性、不复现实验、
-不预测期刊接收，也不取代人类科学编辑。
+`.agents/skills/` 是 canonical source，`plugins/chemical-review/` 是发布 projection。`scripts/` 只负责同步、打包和检查文件，不参与综述运行。
 
-## 源码与 plugin 边界
+## 使用方式
 
-- **唯一 canonical source**：`.agents/skills/chemical-review/`
-- **发布 projection**：`plugins/chemical-review/skills/chemical-review/`
-- **plugin manifest**：`plugins/chemical-review/.codex-plugin/plugin.json`
-- **项目本地 marketplace**：`.agents/plugins/marketplace.json`
-- **同步命令**：`python scripts/build_plugin.py`
+在 Codex 中按需显式调用：
 
-发布 projection 是由脚本生成的，不要直接编辑。CI 会运行
-`python scripts/build_plugin.py --check`，发现源码与 plugin 不一致时阻止发布。
+```text
+$chemical-review-intent
+$chemical-review-research
+$chemical-review-framework
+$chemical-review-synthesis
+$chemical-review-qa
+$chemical-review-publication
+```
 
-这样开发者仍可在 `.agents/skills/` 中使用项目级 skill；普通用户获得的是边界干净的
-Chemical Review plugin，不会携带测试、fixtures、其他开发 skills、Playwright 上下文或本地
-凭据。
+没有必要一次调用全部阶段。每个阶段都可以先读自己的 `SKILL.md`，再按它指向的 companion 文档工作，并用普通语言把结果交回研究者。
 
-## 从 clone 开始做人工 E2E
+## 安装已发布插件
+
+正式版本会随 GitHub Release 提供可验证的 plugin zip 和 SHA-256 校验文件。使用 Codex CLI 时，可以直接从本仓库的 `v0.2.0` tag 添加 marketplace，再安装插件：
 
 ```bash
-git clone https://github.com/kenqia/review-writer-skill.git
-cd review-writer-skill
+codex plugin marketplace add kenqia/review-writer-skill --ref v0.2.0
+codex plugin add chemical-review@review-writer-skill
+```
+
+安装后新建一个 Codex task，再按需调用上面的 `$chemical-review-*` 入口。若想从本地 clone 验证或开发，使用：
+
+```bash
 python scripts/build_plugin.py --check
 python scripts/validate_plugin_package.py
 python -B scripts/smoke_plugin.py
 ```
 
-在 Codex 中将 clone 作为本地 repo marketplace 添加，然后安装 plugin：
+这组命令验证的是插件边界和冷启动，不替代研究者对 brief、来源、化学判断、QA 或 DOCX 的人工验收。
+
+## 五个核心入口与一个独立交付入口
+
+Intent 按 `grilling.md` 逐轮提出带推荐答案的 frontier 问题，并用 `brief-contract.md` 区分模型建议、用户回答、默认值和 `UNKNOWN`；`domain-modeling.md` 只在术语真正需要澄清时加载，`result-and-revision.md` 负责可读结果摘要与 revision snapshot。研究者明确确认 shared understanding 后才写 `review-brief.md`；需要时再加载 `expert-review.md` 请 fresh sub-agent 做 advisory review。它只是建议，不接 provider，也不改 canonical brief。
+
+Research 按语义需要读取 `preflight.md`、`discovery-and-screening.md`、`candidate-acceptance.md`、`full-text-and-resume.md`、`evidence-and-handoff.md`。先把网络、检索、合法全文和解析能力做一个简短的可用性检查；缺配置时说明影响和官方配置入口，`configure_and_continue` 只表示配置后回来，不能偷偷开始正式研究。正式开始、候选集和 handoff 都用 Markdown 与用户确认。缺全文时给合法下载路径和放置位置，不绕过访问控制；解析摘录在原始 PDF 和 locator 核验前不能成为来源事实。
+
+Framework 位于 Research 与 Synthesis 之间，读取可信 MinerU 来源文本、Research handoff 和 confirmed brief，生成 evidence matrix、case cards、comparison map、judgment framework 和 handoff。它使用通用比较主轴加 brief 驱动领域模块；无共同终点时保留 `NOT_COMPARABLE` 和证据地图，不强行排名。
+
+Synthesis 读取适用的 Framework 资产以及 `planning.md`、`drafting.md`、`handoff.md`。先提出轻量写作计划，再以 `draft.md` 作为唯一内容基线，按需要生成读者版和研究版。来源事实、模型综合、假设、UNKNOWN、NOT_COMPARABLE 和 Chemical GAP 要说清楚，但不需要内部 payload 或程序字段。明确跳过 Framework 时，不能把稿件称为完整批判性综合。
+
+QA 读取 `reviewers.md`、`arbiter.md`、`revision-routing.md`。主会话可开四个互不污染的 fresh sub-agent，分别看证据定位、化学可比性、论证反驳和过度主张；arbiter 汇总冲突，研究者用普通语言决定接受、拒绝、暂缓以及返回哪个阶段。QA 不投票、不自动改稿。
+
+Publication 是用户主动调用的独立交付入口。它把 `draft.md` 投影为 `journal-manuscript.md` 与 `journal-manuscript.docx`，移除内部流程元数据但保留科学限制，不新增文献或改变核心判断；DOCX 不是第二正文权威。
+
+### 上下文边界
+
+尽量不要在全局或父目录约定中强制模型读取与当前综述无关的 memory、历史项目、旧 workflow 或凭据。只加载当前项目、当前阶段及用户明确允许的材料；需要额外背景时由研究者点名。这样能让本 skill 的自然语言规则保持足够权重。
+
+### 证据边界
+
+文档建议保留来源 identity、locator、比较口径和未知项，并把具体来源事实与模型推断分开。它们是帮助研究者复核的轻量护栏，不是把每一步锁成二进制 gate；对来源、全文和科学结论的最终接受仍由人类研究者决定。
+
+## 本地检查
 
 ```bash
-codex plugin marketplace add /absolute/path/to/review-writer-skill
-codex plugin add chemical-review@review-writer-skill
-```
-
-固定版本发布后，也可以让 Codex 直接从 GitHub tag 获取 marketplace：
-
-```bash
-codex plugin marketplace add kenqia/review-writer-skill --ref v0.1.0-beta.1
-codex plugin add chemical-review@review-writer-skill
-```
-
-安装后新建一个 Codex task，让新 task 载入 plugin，然后使用：
-
-```text
-$chemical-review
-```
-
-第一次可用这个窄化主题：
-
-```text
-ligand effects in nickel-mediated C–C coupling
-```
-
-按 Grill 回答研究问题、范围/排除项、目标读者和预期贡献；Research 生成七条检索路径和分层
-文献集；Prototype 测试跨论文比较、解释、反驳或新问题；随后调整 PRD、Issues 和 Implement。
-Review 最终从同一 `review-content.md` 生成：
-
-- `clean-manuscript.md`：没有内部标注的干净正文；
-- `researcher-review.md`：带主张层级、证据 ID 和来源单元的研究者版；
-- `review-report.md`：价值、化学推理、科学诚信、意图对齐和格式适配审查；
-- `submission-candidate-package.md`：交给人类科学编辑继续核验的候选包。
-
-人工修改或自然语言意见会被记录，并路由回最早受影响的阶段。用户不需要编辑内部 JSON。
-
-## Research 工具边界
-
-Research 默认只有真实的 OpenAlex discovery adapter；其他路线通过可替换 adapter 注入。推荐
-路线是 OpenAlex/Semantic Scholar/Crossref → PubChem/ChEBI → Unpaywall/Europe PMC/CORE →
-MinerU/GROBID/Docling。缺少 API、配额受限或全文受限时，流程必须保留降级信息，必要时请求
-用户提供 DOI、题录、合法全文或授权 PDF；摘要、排名、解析器输出和模型推断都不能伪装成文献事实。
-
-## 验证与发布
-
-本地验证：
-
-```bash
+python scripts/build_plugin.py --check
+python scripts/validate_plugin_package.py
 python -m unittest discover -s tests -p 'test_*.py'
-ruff check --target-version py311 .agents/skills/chemical-review plugins/chemical-review/skills/chemical-review scripts tests
-python scripts/package_plugin.py
+python -B scripts/smoke_plugin.py
 ```
 
-plugin manifest 也应使用 Codex plugin validator 检查；本机可运行：
-
-```bash
-python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/chemical-review
-```
-
-正式发布顺序是：PR/CI 通过 → 合并到 `main` → 固定版本 tag（例如 `v0.1.0-beta.1`）→ GitHub
-Release 自动生成 plugin zip 与 SHA-256 校验文件。发布 workflow 不把 Beta 版本包装成科学有效性或
-期刊接收结论。
+这些命令只验证 Markdown bundle、manifest 和发布边界；它们不会启动 Chemical Review，也不会声称完成一次真实文献综述。公开 fresh-project 文档边界验收的 runbook 见 [`docs/v2-fresh-project-acceptance.md`](docs/v2-fresh-project-acceptance.md)。
 
 ## 许可证
 
-本项目及 Chemical Review plugin 使用 MIT License。`.agents/skills/` 中复用的第三方工程 skills
-仍按 `LICENSES/mattpocock-skills-MIT.txt` 和 `THIRD_PARTY_NOTICES.md` 单独标明来源与许可。
+本项目及 Chemical Review plugin 使用 MIT License。

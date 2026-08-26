@@ -30,7 +30,7 @@ jobs:
       - name: Run tests
         run: python -m unittest discover -s tests -p 'test_*.py'
       - name: Run Ruff
-        run: ruff check --target-version py311 .agents/skills/chemical-review plugins/chemical-review/skills/chemical-review scripts tests
+        run: ruff check --target-version py311 scripts tests
       - name: Build release archive
         run: python scripts/package_plugin.py
       - name: Run bundled cold-start smoke

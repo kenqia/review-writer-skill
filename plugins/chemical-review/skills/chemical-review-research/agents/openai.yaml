@@ -1,0 +1,6 @@
+interface:
+  display_name: "Chemical Review Research"
+  short_description: "Prepare legal full-text and locator-bound chemistry evidence."
+  default_prompt: "Use $chemical-review-research after Intent confirmation; read the semantic Markdown companions needed for this run, explain the available evidence route, and keep the researcher in control of the next step."
+policy:
+  allow_implicit_invocation: false

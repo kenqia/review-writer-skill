@@ -9,8 +9,9 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 from tempfile import TemporaryDirectory
+
+from plugin_boundary import V2_SKILL_FILES, resolve_plugin_skills
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,18 +53,15 @@ def main() -> int:
         )["version"]
         if payload["version"] != expected_version or not installed_path.is_dir():
             raise RuntimeError(f"unexpected installed plugin payload: {payload}")
-        skill = installed_path / "skills" / PLUGIN
-        sys.path.insert(0, str(skill))
-        from orchestrator import ChemicalReviewOrchestrator  # noqa: E402
-
-        with TemporaryDirectory(prefix="chemical-review-installed-smoke-") as project:
-            result = ChemicalReviewOrchestrator(Path(project)).start(
-                "ligand effects in nickel-mediated C-C coupling"
-            )
-            if (result.phase, result.status) != ("GRILL", "ACTIVE"):
-                raise RuntimeError(
-                    f"unexpected installed cold-start state: {result.phase}/{result.status}"
-                )
+        resolution = resolve_plugin_skills(installed_path)
+        if resolution.version != expected_version:
+            raise RuntimeError(f"installed bundled skill version mismatch: {resolution}")
+        with TemporaryDirectory(prefix="chemical-review-installed-smoke-"):
+            for skill_name, expected_files in V2_SKILL_FILES.items():
+                skill = installed_path / "skills" / skill_name
+                for filename in expected_files:
+                    if not (skill / filename).is_file():
+                        raise RuntimeError(f"installed document-first bundle is missing {skill_name}/{filename}")
     print("Installed plugin cold-start smoke passed.")
     return 0
 

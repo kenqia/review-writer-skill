@@ -1,0 +1,6 @@
+interface:
+  display_name: "Chemical Review Intent"
+  short_description: "Grill and confirm a chemistry review brief with domain docs."
+  default_prompt: "Use $chemical-review-intent with its grilling and domain-modeling Markdown to shape and confirm a chemistry review brief; optionally ask a fresh sub-agent for advisory feedback."
+policy:
+  allow_implicit_invocation: false

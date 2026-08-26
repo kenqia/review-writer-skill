@@ -1,0 +1,6 @@
+interface:
+  display_name: "Chemical Review Publication"
+  short_description: "Project a review draft into reader-ready Markdown and DOCX without changing its science."
+  default_prompt: "Use $chemical-review-publication on an approved draft.md to remove internal workflow noise, preserve scientific boundaries, and produce journal-manuscript.md plus an openable journal-manuscript.docx."
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Chemical Review Framework"
+  short_description: "Turn chemistry evidence into a bounded, testable cross-study judgment framework."
+  default_prompt: "Use $chemical-review-framework after Research to build a brief-driven comparison spine, judgment-changing case cards, comparison map, evidence-bounded judgments, and a readable framework handoff."
+policy:
+  allow_implicit_invocation: false
