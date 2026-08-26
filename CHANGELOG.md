@@ -1,20 +1,15 @@
 # Changelog
 
-## Unreleased — Framework and Publication projection
+## 0.2.0 — 2026-08-26
 
-- Add a generalized, Markdown-first Framework entry for evidence matrices, judgment-changing cases, comparison maps, bounded chemical judgments, and handoffs.
-- Add a user-invoked Publication entry for reader-ready Markdown and DOCX projections without changing the canonical draft or scientific claims.
-- Expand plugin package validation and fresh-project documentation to cover five core entries plus the independent Publication delivery boundary.
+- Release the five-entry Markdown-first Chemical Review product: Intent, Research, Framework, Synthesis, and QA.
+- Add the independent user-invoked Publication entry for journal-readable Markdown and DOCX projection.
+- Add generalized Framework evidence matrices, judgment-changing cases, comparison maps, bounded judgments, non-comparability handling, and targeted Research return actions.
+- Preserve canonical Markdown ownership, source locators, scientific uncertainty, language boundaries, and human acceptance limits.
 
-## Unreleased — Markdown-first cutover
+## Unreleased
 
-- Remove the four stage runners and their gate-heavy product tests from the skill
-  surface; canonical and packaged skills now contain Markdown companions and
-  agent manifests only.
-- Keep configuration, evidence, handoff, and QA decisions readable in the
-  conversation and project Markdown instead of hiding them in runtime state.
-- Narrow the package README, CONTEXT, prompts, and acceptance report around the
-  lightweight product boundary.
+Future changes will be listed here.
 
 ## Historical runner prototype
 
@@ -37,7 +32,7 @@
 
 ## 0.2.0-beta.1 — v2 implementation candidate
 
-- Replace the v1 seven-stage orchestrator with four independently invocable
+- Replace the v1 seven-stage orchestrator with independently invocable
   Intent, Research, Synthesis, and QA skills using explicit Markdown handoffs.
 - Add configurable OpenAlex, Semantic Scholar, Crossref, PubChem, ChEBI,
   Unpaywall, Europe PMC, CORE, and MinerU adapters plus an authorized-PDF wait

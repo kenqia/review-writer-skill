@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a deterministic Chemical Review v2 plugin archive."""
+"""Create a deterministic Chemical Review plugin archive."""
 
 from __future__ import annotations
 

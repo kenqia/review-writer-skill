@@ -22,7 +22,7 @@ def main() -> int:
     for skill_path in resolution.skill_paths:
         if not (skill_path / "SKILL.md").is_file():
             raise RuntimeError(f"missing cold-start skill: {skill_path}")
-    with TemporaryDirectory(prefix="chemical-review-v2-smoke-") as project:
+    with TemporaryDirectory(prefix="chemical-review-smoke-") as project:
         root = Path(project)
         if list(root.iterdir()):
             raise RuntimeError("fresh smoke project is not empty")

@@ -1,6 +1,6 @@
 {
   "name": "chemical-review",
-  "version": "0.2.0-beta.1",
+  "version": "0.2.0",
   "description": "Five composable, evidence-governed chemistry skills plus an optional Markdown-to-DOCX publication projection.",
   "author": {
     "name": "Review Writer contributors",

@@ -30,6 +30,25 @@ $chemical-review-publication
 
 没有必要一次调用全部阶段。每个阶段都可以先读自己的 `SKILL.md`，再按它指向的 companion 文档工作，并用普通语言把结果交回研究者。
 
+## 安装已发布插件
+
+正式版本会随 GitHub Release 提供可验证的 plugin zip 和 SHA-256 校验文件。使用 Codex CLI 时，可以直接从本仓库的 `v0.2.0` tag 添加 marketplace，再安装插件：
+
+```bash
+codex plugin marketplace add kenqia/review-writer-skill --ref v0.2.0
+codex plugin add chemical-review@review-writer-skill
+```
+
+安装后新建一个 Codex task，再按需调用上面的 `$chemical-review-*` 入口。若想从本地 clone 验证或开发，使用：
+
+```bash
+python scripts/build_plugin.py --check
+python scripts/validate_plugin_package.py
+python -B scripts/smoke_plugin.py
+```
+
+这组命令验证的是插件边界和冷启动，不替代研究者对 brief、来源、化学判断、QA 或 DOCX 的人工验收。
+
 ## 五个核心入口与一个独立交付入口
 
 Intent 按 `grilling.md` 逐轮提出带推荐答案的 frontier 问题，并用 `brief-contract.md` 区分模型建议、用户回答、默认值和 `UNKNOWN`；`domain-modeling.md` 只在术语真正需要澄清时加载，`result-and-revision.md` 负责可读结果摘要与 revision snapshot。研究者明确确认 shared understanding 后才写 `review-brief.md`；需要时再加载 `expert-review.md` 请 fresh sub-agent 做 advisory review。它只是建议，不接 provider，也不改 canonical brief。

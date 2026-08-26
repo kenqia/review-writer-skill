@@ -23,4 +23,15 @@ $chemical-review-qa
 $chemical-review-publication
 ```
 
+## 安装
+
+从 GitHub Release 安装当前正式版：
+
+```bash
+codex plugin marketplace add kenqia/review-writer-skill --ref v0.2.0
+codex plugin add chemical-review@review-writer-skill
+```
+
+Release 同时提供 plugin zip 和 SHA-256 校验文件；安装后请在新的 Codex task 中调用所需入口。
+
 这个 plugin 是协作辅助，不是科学真值机、自动投稿器或期刊接收预测器。真实凭据只在研究者自己的环境中配置，不写入 plugin 或 Markdown handoff。

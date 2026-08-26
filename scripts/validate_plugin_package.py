@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the Chemical Review v2 plugin boundary without dependencies."""
+"""Validate the Chemical Review plugin boundary without dependencies."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def validate(plugin: Path) -> list[str]:
         skill_root = plugin / "skills" / skill
         skill_text = (skill_root / "SKILL.md").read_text(encoding="utf-8", errors="replace") if (skill_root / "SKILL.md").is_file() else ""
         if f"name: {skill}" not in skill_text:
-            errors.append(f"missing or mismatched v2 skill identity: {skill}")
+            errors.append(f"missing or mismatched skill identity: {skill}")
     for path in plugin.rglob("*"):
         if path.is_symlink():
             errors.append(f"symlink is not allowed in plugin: {path.relative_to(plugin)}")

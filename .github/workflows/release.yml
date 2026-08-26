@@ -37,16 +37,19 @@ jobs:
           python scripts/build_plugin.py --check
           python scripts/validate_plugin_package.py
           python -m unittest discover -s tests -p 'test_*.py'
-          ruff check --target-version py311
-          .agents/skills/chemical-review-intent
-          .agents/skills/chemical-review-research
-          .agents/skills/chemical-review-synthesis
-          .agents/skills/chemical-review-qa
-          plugins/chemical-review/skills/chemical-review-intent
-          plugins/chemical-review/skills/chemical-review-research
-          plugins/chemical-review/skills/chemical-review-synthesis
-          plugins/chemical-review/skills/chemical-review-qa
-          scripts tests
+          ruff check --target-version py311 scripts tests
+      - name: Verify public skill entrypoints
+        run: |
+          for skill in \
+            chemical-review-intent \
+            chemical-review-research \
+            chemical-review-framework \
+            chemical-review-synthesis \
+            chemical-review-qa \
+            chemical-review-publication; do
+            test -f ".agents/skills/$skill/SKILL.md"
+            test -f "plugins/chemical-review/skills/$skill/SKILL.md"
+          done
       - name: Build plugin archive
         run: python scripts/package_plugin.py
       - name: Run bundled cold-start smoke

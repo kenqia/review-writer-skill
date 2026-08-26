@@ -83,7 +83,7 @@ def resolve_plugin_skills(plugin_root: Path) -> PluginSkillResolution:
     version = str(manifest.get("version", "")).strip()
     skills_value = str(manifest.get("skills", "")).strip()
     if plugin_id != "chemical-review" or not version or skills_value != "./skills/":
-        raise _resolution_error("plugin manifest does not identify the Chemical Review v2 skill pack")
+        raise _resolution_error("plugin manifest does not identify the Chemical Review skill pack")
     skills_root = (root / skills_value).resolve()
     try:
         skills_root.relative_to(root)
@@ -94,7 +94,7 @@ def resolve_plugin_skills(plugin_root: Path) -> PluginSkillResolution:
         skill_path = skills_root / skill_name
         skill_file = skill_path / "SKILL.md"
         if not skill_file.is_file():
-            raise _resolution_error(f"bundled v2 skill is missing: {skill_name}")
+            raise _resolution_error(f"bundled skill is missing: {skill_name}")
         if f"name: {skill_name}" not in skill_file.read_text(encoding="utf-8"):
             raise _resolution_error(f"bundled skill identity does not match: {skill_name}")
         paths.append(skill_path)
