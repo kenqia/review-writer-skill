@@ -16,6 +16,12 @@ NOT_COMPARABLE: docking scores and isolated yields use different endpoints and c
 
 Chemical GAP: the current scope does not establish behavior across other catalyst states.
 
+SOURCE_FACT [DOI:10.0000/fixture-d @ p. 3, Figure 2/Table S4]: L1 gave 75% while L2 gave 51%; a second substrate showed little difference.
+
+SOURCE_FACT [DOI:10.0000/fixture-e @ p. 4, Table 2]: an independent repeat gave 73% using the same nominal endpoint.
+
+SOURCE_FACT [DOI:10.0000/fixture-f @ p. 5, Table 3]: L1 did not improve conversion for the hindered substrate and an unidentified by-product was observed.
+
 Process notes that must not enter the reader projection: MinerU parser status = trusted; 4 PDF attachments; QA routing = pending; Evidence ID = E-001; stage/unit = synthesis/paragraph-1.
 
 | Study | Endpoint | Limitation |
@@ -30,3 +36,6 @@ Figure 2. Composite visual assembled from unverified papers; source, locator, an
 References
 
 [1] DOI:10.0000/fixture-a.
+[2] DOI:10.0000/fixture-d.
+[3] DOI:10.0000/fixture-e.
+[4] DOI:10.0000/fixture-f.

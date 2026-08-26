@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import unittest
 
 from scripts.plugin_boundary import V2_SKILL_FILES
@@ -500,6 +501,12 @@ class LightweightChemicalReviewTests(unittest.TestCase):
         self.assertIn("partial-scope", draft_lower)
         self.assertNotIn("partial-scope", manuscript_lower)
         self.assertIn("current review does not establish", manuscript_lower)
+        doi_pattern = r"doi:10\.0000/fixture-[a-z]"
+        self.assertEqual(
+            set(re.findall(doi_pattern, draft_lower)),
+            set(re.findall(doi_pattern, manuscript_lower)),
+            "Publication fixture must not add or drop literature identities",
+        )
 
     def test_publication_product_use_fixture_covers_visuals_journal_branches_and_docx_boundary(self):
         publication = FIXTURE / "publication"
