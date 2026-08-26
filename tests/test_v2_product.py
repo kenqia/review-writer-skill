@@ -550,6 +550,13 @@ class LightweightChemicalReviewTests(unittest.TestCase):
         ):
             self.assertIn(marker, docx)
 
+    def test_publication_product_use_fixture_preserves_input_language_without_translation(self):
+        language = (FIXTURE / "publication" / "language-preservation.md").read_text(encoding="utf-8")
+        for marker in ("Translation was not requested", "中文", "配体 L1", "催化剂状态", "孤立收率", "must not silently translate"):
+            self.assertIn(marker, language)
+        self.assertIn("在限定的催化剂状态与底物范围内", language)
+        self.assertIn("A separate, explicitly confirmed translation task", language)
+
     def test_plugin_manifest_and_projection_are_document_first(self):
         manifest = json.loads(
             (ROOT / "plugins" / "chemical-review" / ".codex-plugin" / "plugin.json").read_text(

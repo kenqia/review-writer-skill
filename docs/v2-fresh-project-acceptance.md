@@ -19,7 +19,7 @@
 7. **Framework**：读取 confirmed brief、Research handoff/evidence ledger、可信 MinerU 文本和 explicit allowlist。生成 `evidence-matrix.md`、`case-cards.md`、`comparison-map.md`、`judgment-framework.md` 和 `framework-handoff.md`；覆盖兼容、冲突/负结果和无共同终点的场景。研究者确认 Framework 边界或明确 skip 后，才把适用结果交给 Synthesis；无共同终点时不得强行排名。
 8. **Synthesis**：读取适用 Framework 资产、confirmed brief、Research-owned materials 和 explicit allowlist。先写 `synthesis-plan.md`，在 plan confirmation 前不开始 formal drafting。以唯一 `draft.md` 写一版批判性 synthesis；`reader-draft.md` / `research-draft.md` 只能是 projections。若 Research 或 Framework 不完整，稿件用普通语言标记 `unreviewed; evidence-bounded; partial-scope`。研究者另行确认 draft 进入 QA。
 9. **QA**：默认启动四个 fresh reviewer，输入相同 revision 的 allowlisted brief/Research/Framework/draft/stage summary。检查 reviewer 不能互读或改稿；至少让一个 reviewer timeout/malformed，结果必须是该角度 `Incomplete QA`。arbiter 生成 `qa/review-report.md`、`qa/qa-plan.md`、`qa/revision-plan.md`，保留冲突和 locator 缺口。研究者用普通语言 accept/reject/defer，接受项路由到 earliest affected stage，QA 不自动改 draft 或推进 Delivery。
-10. **Publication（独立入口）**：用户主动提供 `draft.md` 和 allowlist，生成 `journal-manuscript.md` 与 `journal-manuscript.docx`。验证内部流程元数据移除而科学限制、假设、partial scope、引用和视觉来源关系保留；DOCX 是 projection，不是第二正文权威。无目标期刊走中性路径；有 confirmed target journal（目标期刊）时必须先确认再读取 official guidance。
+10. **Publication（独立入口）**：用户主动提供 `draft.md` 和 allowlist，生成 `journal-manuscript.md` 与 `journal-manuscript.docx`。验证内部流程元数据移除而科学限制、假设、partial scope、引用、输入语言和视觉来源关系保留；未明确要求翻译时不得静默翻译；DOCX 是 projection，不是第二正文权威。无目标期刊走中性路径；有 confirmed target journal（目标期刊）时必须先确认再读取 official guidance。
 
 ## 压力场景（pressure scenarios）
 
